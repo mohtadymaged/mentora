@@ -68,10 +68,13 @@ export function MentoraApp({
   return (
     <PhoneShell V={V}>
       <div data-mvar={scope} style={{
-        minHeight: '100%', position: 'relative', fontFamily: V.fontSans, paddingTop: 8,
+        minHeight: '100%', height: '100%',
+        position: 'relative', fontFamily: V.fontSans,
+        paddingTop: screen === 'welcome' ? 0 : 8,
+        display: 'flex', flexDirection: 'column',
       }}>
         <VariantCSS variantKey={variant} scope={scope} />
-        <PaperBg V={V} style={{ minHeight: '100%' }}>
+        <PaperBg V={V} style={{ flex: 1, minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
           {screen === 'welcome' && (
             <WelcomeScreen V={V} dense={dense}
               onEnter={() => setScreen('landing')}

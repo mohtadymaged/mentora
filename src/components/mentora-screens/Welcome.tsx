@@ -8,7 +8,8 @@ export function WelcomeScreen({ V, dense, onEnter, onSignIn }: any) {
 
   return (
     <div data-screen-label="00 Welcome" className="m-fade" style={{
-      minHeight: '100%', display: 'flex', flexDirection: 'column',
+      minHeight: '100%', height: '100%',
+      display: 'flex', flexDirection: 'column',
       fontFamily: V.fontSans, color: V.ink, position: 'relative',
       overflow: 'hidden',
     }}>
@@ -61,7 +62,7 @@ export function WelcomeScreen({ V, dense, onEnter, onSignIn }: any) {
       <div style={{
         flex: 1, display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center', position: 'relative', zIndex: 1,
-        padding: `${dense ? 12 : 18}px ${pad}px ${dense ? 8 : 14}px`,
+        padding: `60px ${pad}px ${dense ? 12 : 18}px`,
       }}>
         <BlurFade delay={0.15} duration={0.7} yOffset={12} blur="10px">
           <div style={{

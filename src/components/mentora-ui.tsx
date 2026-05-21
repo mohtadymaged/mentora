@@ -183,7 +183,9 @@ export function PhoneShell({ V, children }: { V: Variant; children: React.ReactN
     }}>
       <div style={{
         width: '100%', maxWidth: 440, position: 'relative',
-        minHeight: '100vh', background: V.bg,
+        minHeight: '100vh', height: '100vh',
+        display: 'flex', flexDirection: 'column',
+        background: V.bg,
         backgroundImage: V.paper ? PAPER_NOISE : undefined,
         backgroundSize: V.paper ? '240px 240px' : undefined,
         boxShadow: '0 0 40px rgba(60,30,20,0.06)',
