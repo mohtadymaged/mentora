@@ -61,17 +61,17 @@ export function WelcomeScreen({ V, dense, onEnter, onSignIn }: any) {
       <div style={{
         flex: 1, display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center', position: 'relative', zIndex: 1,
-        padding: `${dense ? 30 : 50}px ${pad}px ${dense ? 14 : 22}px`,
+        padding: `${dense ? 12 : 18}px ${pad}px ${dense ? 8 : 14}px`,
       }}>
         <BlurFade delay={0.15} duration={0.7} yOffset={12} blur="10px">
           <div style={{
-            width: 96, height: 96, borderRadius: 24,
+            width: 72, height: 72, borderRadius: 20,
             background: V.surface, color: V.accent,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: V.fontSerif, fontStyle: 'italic',
-            fontSize: 60, fontWeight: 500, lineHeight: 1,
+            fontSize: 44, fontWeight: 500, lineHeight: 1,
             boxShadow: '0 14px 32px rgba(60,40,20,0.18), 0 0 0 1px rgba(60,40,20,0.06)',
-            marginBottom: dense ? 18 : 26,
+            marginBottom: dense ? 12 : 18,
             position: 'relative',
           }}>
             M
@@ -84,7 +84,7 @@ export function WelcomeScreen({ V, dense, onEnter, onSignIn }: any) {
 
         <BlurFade delay={0.35} duration={0.4} yOffset={6}>
           <div className="m-hand" style={{
-            fontSize: 24, color: V.ribbon, lineHeight: 1, marginBottom: 8,
+            fontSize: 18, color: V.ribbon, lineHeight: 1, marginBottom: 6,
             fontWeight: 700,
           }}>
             <WordReveal text="welcome —" delay={0.4} perWord={0.08} />
@@ -93,7 +93,7 @@ export function WelcomeScreen({ V, dense, onEnter, onSignIn }: any) {
 
         <BlurFade delay={0.5} duration={0.4} yOffset={6} blur="6px">
           <h1 className="m-serif" style={{
-            fontSize: dense ? 42 : 52, color: V.ink, lineHeight: 1.0,
+            fontSize: dense ? 32 : 38, color: V.ink, lineHeight: 1.0,
             letterSpacing: '-0.03em', margin: 0, textAlign: 'center',
             fontWeight: 700,
             textShadow: '0 1px 2px rgba(255,250,240,0.4)',
@@ -109,21 +109,21 @@ export function WelcomeScreen({ V, dense, onEnter, onSignIn }: any) {
             cooldownTime={1.1}
             color={V.accent}
             style={{
-              width: 260, height: '1.15em', marginTop: 8,
+              width: 220, height: '1.15em', marginTop: 6,
               fontFamily: V.fontSerif,
               fontStyle: 'italic', fontWeight: 500,
-              fontSize: dense ? 24 : 30,
+              fontSize: dense ? 19 : 23,
             }}
           />
         </BlurFade>
 
         <div style={{
-          marginTop: 18, textAlign: 'center',
+          marginTop: 12, textAlign: 'center',
           letterSpacing: '0.06em',
           fontFamily: '"Cormorant Garamond", "Instrument Serif", Georgia, serif',
           fontStyle: 'italic', fontWeight: 700,
           color: V.ink,
-          fontSize: dense ? 19 : 22,
+          fontSize: dense ? 14 : 16,
           opacity: 0.95,
         }}>
           <WordReveal
@@ -133,14 +133,14 @@ export function WelcomeScreen({ V, dense, onEnter, onSignIn }: any) {
         </div>
 
         <div style={{
-          marginTop: dense ? 22 : 30,
+          marginTop: dense ? 14 : 20,
           textAlign: 'center',
-          maxWidth: 340,
+          maxWidth: 300,
           fontFamily: '"Cormorant Garamond", "Instrument Serif", Georgia, serif',
           fontStyle: 'italic', fontWeight: 700,
           lineHeight: 1.35,
           color: V.ink,
-          fontSize: dense ? 24 : 30,
+          fontSize: dense ? 18 : 22,
         }}>
           <WordReveal
             text={'"A village where everyone teaches, and everyone learns."'}

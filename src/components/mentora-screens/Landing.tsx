@@ -15,10 +15,10 @@ function LandingBg({ V }: any) {
         objectFit: 'cover', objectPosition: 'center',
         filter: 'saturate(0.95)',
       }} />
-      <div style={{ position: 'absolute', inset: 0, background: 'rgba(255, 252, 244, 0.82)' }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(255, 252, 244, 0.97)' }} />
       <div style={{
         position: 'absolute', inset: 0,
-        background: `linear-gradient(180deg, rgba(255,252,244,0.4) 0%, rgba(255,252,244,0) 35%, rgba(255,252,244,0) 65%, ${V.bg}ee 100%)`,
+        background: `linear-gradient(180deg, rgba(255,252,244,0.85) 0%, rgba(255,252,244,0.3) 35%, rgba(255,252,244,0.5) 65%, ${V.bg} 100%)`,
       }} />
       <div style={{
         position: 'absolute', inset: 0,
