@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { MENTORS, VARIANTS } from './mentora-data';
 import { VariantCSS, PaperBg, TabBar, PhoneShell, type Role, type Screen } from './mentora-ui';
+import { WelcomeScreen } from './mentora-screens/Welcome';
 import { LandingScreen } from './mentora-screens/Landing';
 import { RoleScreen } from './mentora-screens/Role';
 import { RegisterScreen } from './mentora-screens/Register';
@@ -28,7 +29,7 @@ export function MentoraApp({
   variant = 'hearth',
   density = 'cozy',
   scope = 'app',
-  initialScreen = 'landing',
+  initialScreen = 'welcome',
   initialRole = 'learner',
   initialBookingState,
 }: MentoraAppProps) {
@@ -57,10 +58,11 @@ export function MentoraApp({
     if (screen === 'mentor')   return setScreen('home');
     if (screen === 'register') return setScreen('role');
     if (screen === 'role')     return setScreen('landing');
+    if (screen === 'landing')  return setScreen('welcome');
     return setScreen('home');
   };
 
-  const isPreAuth = screen === 'landing' || screen === 'role' || screen === 'register';
+  const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register';
   const hideTabBar = isPreAuth || screen === 'booking';
 
   return (
@@ -70,6 +72,11 @@ export function MentoraApp({
       }}>
         <VariantCSS variantKey={variant} scope={scope} />
         <PaperBg V={V} style={{ minHeight: '100%' }}>
+          {screen === 'welcome' && (
+            <WelcomeScreen V={V} dense={dense}
+              onEnter={() => setScreen('landing')}
+              onSignIn={() => setScreen('home')} />
+          )}
           {screen === 'landing' && (
             <LandingScreen V={V} dense={dense}
               onEnter={() => setScreen('role')}

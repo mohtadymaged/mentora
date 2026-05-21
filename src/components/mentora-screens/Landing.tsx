@@ -2,6 +2,44 @@
 import React from 'react';
 import { MENTORS, PAPER_NOISE, HandUnderline, Icon } from '../mentora-data';
 import { MentorPhoto } from '../mentora-ui';
+import { WordReveal, BlurFade } from '../mentora-fx';
+
+// Landing backdrop — El Gouna aerial, faded behind a white veil
+function LandingBg({ V }: any) {
+  return (
+    <div aria-hidden style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/landing-bg.webp" alt="" style={{
+        position: 'absolute', inset: 0,
+        width: '100%', height: '100%',
+        objectFit: 'cover', objectPosition: 'center',
+        filter: 'saturate(0.95)',
+      }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(255, 252, 244, 0.82)' }} />
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: `linear-gradient(180deg, rgba(255,252,244,0.4) 0%, rgba(255,252,244,0) 35%, rgba(255,252,244,0) 65%, ${V.bg}ee 100%)`,
+      }} />
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: `linear-gradient(180deg, ${V.bg}11 0%, transparent 25%, transparent 65%, ${V.bg}cc 100%), ${V.accent}11`,
+        mixBlendMode: 'multiply',
+      }} />
+      <div style={{
+        position: 'absolute', top: '-10%', right: '-15%',
+        width: 380, height: 380, borderRadius: '50%',
+        background: `radial-gradient(circle, ${V.accent}30 0%, transparent 65%)`,
+        filter: 'blur(40px)',
+      }} />
+      <div style={{
+        position: 'absolute', bottom: '-10%', left: '-15%',
+        width: 320, height: 320, borderRadius: '50%',
+        background: `radial-gradient(circle, ${V.ribbon}28 0%, transparent 65%)`,
+        filter: 'blur(40px)',
+      }} />
+    </div>
+  );
+}
 
 export function LandingScreen({ V, dense, onEnter, onTeach, onSignIn }: any) {
   const collageAtelier = [
@@ -27,8 +65,11 @@ export function LandingScreen({ V, dense, onEnter, onTeach, onSignIn }: any) {
     <div data-screen-label="00 Landing" className="m-fade" style={{
       minHeight: '100%', display: 'flex', flexDirection: 'column',
       fontFamily: V.fontSans, color: V.ink,
+      position: 'relative', overflow: 'hidden',
     }}>
+      <LandingBg V={V} />
       <div style={{
+        position: 'relative', zIndex: 1,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: `4px ${pad}px 0`,
       }}>
@@ -50,7 +91,8 @@ export function LandingScreen({ V, dense, onEnter, onTeach, onSignIn }: any) {
       </div>
 
       <div style={{
-        position: 'relative', height: dense ? 320 : 360,
+        position: 'relative', zIndex: 1,
+        height: dense ? 320 : 360,
         margin: `${dense ? 10 : 14}px ${pad - 6}px`,
       }}>
         {!V.polaroid && (
@@ -115,63 +157,88 @@ export function LandingScreen({ V, dense, onEnter, onTeach, onSignIn }: any) {
         )}
       </div>
 
-      <div style={{ padding: `0 ${pad}px`, textAlign: 'left' }}>
-        <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6,
-          background: V.accentBg, color: V.accent,
-          padding: '4px 11px', borderRadius: 100,
-          fontSize: 11, fontWeight: 600, letterSpacing: '0.04em',
-          marginBottom: dense ? 10 : 14,
-        }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: V.accent }} />
-          2,400 of your kind of people
-        </div>
+      <div style={{ position: 'relative', zIndex: 1, padding: `0 ${pad}px`, textAlign: 'left' }}>
+        <BlurFade delay={0.05} duration={0.4} yOffset={6}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            background: V.accentBg, color: V.accent,
+            padding: '4px 11px', borderRadius: 100,
+            fontSize: 11, fontWeight: 600, letterSpacing: '0.04em',
+            marginBottom: dense ? 10 : 14,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: V.accent }} />
+            <WordReveal text="2,400 of your kind of people" delay={0.15} perWord={0.05} duration={0.5} yOffset={6} blur="4px" />
+          </div>
+        </BlurFade>
         <h1 className="m-serif" style={{
           fontSize: dense ? 34 : 40, color: V.ink, lineHeight: 1.02,
           letterSpacing: '-0.02em', margin: 0,
           fontWeight: V.polaroid ? 500 : 400,
         }}>
-          Learn from people<br/>
-          you{' '}
+          <WordReveal text="Learn from people" delay={0.35} perWord={0.07} duration={0.55} yOffset={10} blur="6px" />
+          <br/>
+          <WordReveal text="you" delay={0.6} perWord={0.07} duration={0.55} yOffset={10} blur="6px" />{' '}
           <span style={{ fontStyle: 'italic', color: V.accent, position: 'relative', display: 'inline-block' }}>
-            actually
+            <WordReveal text="actually" delay={0.7} perWord={0.07} duration={0.55} yOffset={10} blur="6px" />
             <HandUnderline color={V.accent} width={84} height={9} strokeWidth={2.2}
               style={{ position: 'absolute', left: 0, bottom: -7 }} />
           </span>{' '}
-          know.
+          <WordReveal text="know." delay={0.85} perWord={0.07} duration={0.55} yOffset={10} blur="6px" />
         </h1>
         <p style={{
           fontSize: 14.5, color: V.inkSoft, lineHeight: 1.55,
           margin: `${dense ? 16 : 22}px 0 0`, maxWidth: 320,
         }}>
-          Mentora is a community of friends teaching what they love —
-          watercolor, code, cooking, calm mornings. <em className="m-serif" style={{ color: V.ink, fontStyle: 'italic' }}>Pull up a chair.</em>
+          <WordReveal
+            text="Mentora is a community of friends teaching what they love — watercolor, code, cooking, calm mornings. Pull up a chair."
+            delay={1.05} perWord={0.04} duration={0.5} yOffset={6} blur="4px"
+          />
         </p>
       </div>
 
       <div style={{
+        position: 'relative', zIndex: 1,
         marginTop: 'auto', padding: `${dense ? 20 : 28}px ${pad}px 12px`,
         display: 'flex', flexDirection: 'column', gap: 10,
       }}>
-        <button onClick={onEnter} className="m-tap" style={{
-          background: V.accent, color: '#fffaf0',
-          border: 'none', borderRadius: 16, padding: '15px 0',
-          fontSize: 15, fontWeight: 600, letterSpacing: '0.01em',
-          boxShadow: `0 10px 22px ${V.accent}40`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        }}>
-          Start learning {Icon.arrow(17, '#fffaf0')}
-        </button>
-        <button onClick={onTeach} className="m-tap" style={{
-          background: V.surface, color: V.ink,
-          border: `1px solid ${V.rule}`, borderRadius: 16, padding: '14px 0',
-          fontSize: 15, fontWeight: 500,
-          backgroundImage: V.paper ? PAPER_NOISE : undefined,
-          backgroundSize: V.paper ? '240px 240px' : undefined,
-        }}>I want to teach instead</button>
-        <div className="m-hand" style={{
-          textAlign: 'center', marginTop: 8, color: V.inkMute, fontSize: 15,
-        }}>— free to join, always —</div>
+        <BlurFade delay={0.6} duration={0.5} yOffset={8}>
+          <button onClick={onEnter} className="m-tap" style={{
+            position: 'relative', overflow: 'hidden',
+            width: '100%',
+            background: V.accent, color: '#fffaf0',
+            border: 'none', borderRadius: 16, padding: '15px 0',
+            fontSize: 15, fontWeight: 600, letterSpacing: '0.01em',
+            boxShadow: `0 10px 22px ${V.accent}40`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}>
+            <span aria-hidden style={{
+              position: 'absolute', top: 0, left: '-30%', width: '40%', height: '100%',
+              background: 'linear-gradient(110deg, transparent 30%, rgba(255,250,240,0.4) 50%, transparent 70%)',
+              animation: 'btn-sweep 2.8s ease-in-out infinite',
+              pointerEvents: 'none',
+            }} />
+            <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              Start learning {Icon.arrow(17, '#fffaf0')}
+            </span>
+          </button>
+        </BlurFade>
+        <BlurFade delay={0.72} duration={0.5} yOffset={6}>
+          <button onClick={onTeach} className="m-tap" style={{
+            width: '100%',
+            background: V.surface, color: V.ink,
+            border: `1px solid ${V.rule}`, borderRadius: 16, padding: '14px 0',
+            fontSize: 15, fontWeight: 500,
+            backgroundImage: V.paper ? PAPER_NOISE : undefined,
+            backgroundSize: V.paper ? '240px 240px' : undefined,
+          }}>I want to teach instead</button>
+        </BlurFade>
+        <BlurFade delay={0.85} duration={0.4} yOffset={4}>
+          <div className="m-hand" style={{
+            textAlign: 'center', marginTop: 8, color: V.inkMute, fontSize: 15,
+          }}>
+            <WordReveal text="— free to join, always —" delay={1.9} perWord={0.06} duration={0.5} yOffset={6} blur="4px" />
+          </div>
+        </BlurFade>
       </div>
     </div>
   );

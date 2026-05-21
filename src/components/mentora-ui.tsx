@@ -6,7 +6,7 @@ import type { Variant } from './mentora-data';
 
 export type Role = 'learner' | 'teacher';
 export type Screen =
-  | 'landing' | 'role' | 'register'
+  | 'welcome' | 'landing' | 'role' | 'register'
   | 'home' | 'courses' | 'explore' | 'settings'
   | 'mentor' | 'reviews' | 'booking';
 
