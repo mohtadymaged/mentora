@@ -47,30 +47,47 @@ window.MENTORA_SUPABASE = {
     };
   }
 
+  // Writes any locally-stashed registration data to the signed-in user's
+  // profile row (needs an active session so RLS allows the update).
+  async function flushPendingProfile() {
+    var raw; try { raw = localStorage.getItem('mentora_pending_profile'); } catch (e) { return; }
+    if (!raw) return;
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return;
+    let fields; try { fields = JSON.parse(raw); } catch (e) { return; }
+    const { error } = await sb.from("profiles").update(fields).eq("id", session.user.id);
+    if (!error) { try { localStorage.removeItem('mentora_pending_profile'); } catch (e) {} }
+    else console.warn("[Mentora] profile flush:", error.message);
+  }
+
+  // Whenever a session becomes available (e.g. after confirming email and
+  // returning to the app), flush any pending profile fields.
+  sb.auth.onAuthStateChange((_evt, session) => { if (session) flushPendingProfile(); });
+
   window.MENTORA_DB = {
     client: sb,
+    flushPendingProfile,
 
-    // Sign up: create account, then fill the profile row (trigger creates the
-    // base row; we update it with the rest of the registration data).
+    // Sign up: create account. Stash the full registration data locally and
+    // also push it into auth metadata, then try to save the profile now. If
+    // email-confirmation is on there's no session yet (RLS blocks the write),
+    // so we re-apply the pending data automatically on the next sign-in.
     async signUp(email, password, p) {
+      try { localStorage.setItem('mentora_pending_profile', JSON.stringify(profileFields(p))); } catch (e) {}
       const { data, error } = await sb.auth.signUp({
         email, password,
-        options: { data: { full_name: p.name || "" } },
+        options: { data: Object.assign({ full_name: p.name || "" }, profileFields(p)) },
       });
       if (error) throw error;
-      const uid = data.user && data.user.id;
-      if (uid) {
-        // Upsert in case the trigger row already exists.
-        const { error: pErr } = await sb.from("profiles")
-          .update(profileFields(p)).eq("id", uid);
-        if (pErr) console.warn("[Mentora] profile save:", pErr.message);
-      }
+      // If a session exists immediately (email-confirm OFF), save right away.
+      if (data.session) await flushPendingProfile();
       return data;
     },
 
     async signIn(email, password) {
       const { data, error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
+      await flushPendingProfile();
       return data;
     },
 
