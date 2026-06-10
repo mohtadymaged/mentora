@@ -6,7 +6,7 @@
 <title>Mentora</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=Source+Serif+4:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&family=Instrument+Serif:ital@0;1&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=Fredoka:wght@400;500;600;700&family=Source+Serif+4:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&family=Instrument+Serif:ital@0;1&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #000; font-family: 'Inter', -apple-system, system-ui, sans-serif; overflow: hidden; }
   #root { height: 100%; }
@@ -1643,6 +1643,21 @@ Object.assign(window, { MENTORS, REVIEWS_FOR_LAYLA, ACTIVITY, ENROLLED, RECOMMEN
 
 const { useState, useMemo, useEffect } = React;
 
+// Global tap-to-wave keyframe (injected once) so the 👋 can re-wave on tap.
+if (typeof document !== 'undefined' && !document.getElementById('m-wave-global-style')) {
+  const s = document.createElement('style');
+  s.id = 'm-wave-global-style';
+  s.textContent = `@keyframes m-wave-global {
+    0%,100% { transform: rotate(0deg); }
+    15% { transform: rotate(16deg); }
+    30% { transform: rotate(-8deg); }
+    45% { transform: rotate(16deg); }
+    60% { transform: rotate(-4deg); }
+    75% { transform: rotate(10deg); }
+  }`;
+  document.head.appendChild(s);
+}
+
 // ─────────────────────────────────────────────────────────
 // Variant-aware ornaments — different shapes per direction
 // ─────────────────────────────────────────────────────────
@@ -1671,6 +1686,7 @@ function VariantCSS({ variantKey, scope }) {
         to   { opacity: 1; transform: translateY(0) scale(1); }
       }
       [data-mvar="${scope}"] .m-tap { transition: transform .14s cubic-bezier(.2,.7,.2,1), box-shadow .2s ease, background .15s ease; }
+      [data-mvar="${scope}"] .m-num { font-family: 'Fredoka', 'Space Grotesk', 'Inter', sans-serif; font-weight: 600; letter-spacing: 0; }
       [data-mvar="${scope}"] .m-tap:active { transform: scale(0.95); }
       [data-mvar="${scope}"] .m-float { animation: m-float-${scope} 7s ease-in-out infinite; }
       @keyframes m-float-${scope} {
@@ -2303,7 +2319,10 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="m-hand" style={{
             fontSize: 16, color: V.ribbon, lineHeight: 1, marginBottom: 2,
-          }}>{V.bold ? <>Hey, {USER.name} <span className="m-wave">👋</span></> : handGreeting}</div>
+          }}>{V.bold ? <>Hey, {USER.name}{' '}
+            <span className="m-wave" style={{ display: 'inline-block', cursor: 'pointer', transformOrigin: '70% 80%' }}
+              onClick={(e) => { const el = e.currentTarget; el.style.animation = 'none'; void el.offsetWidth; el.style.animation = 'm-wave-global 1s ease-in-out'; }}
+              title="Wave back!">👋</span></> : handGreeting}</div>
           <div className="m-serif" style={{
             fontSize: dense ? 22 : 26, color: V.ink, lineHeight: 1.1,
             letterSpacing: '-0.02em', fontWeight: V.bold ? 700 : (V.polaroid ? 500 : 400),
@@ -2583,7 +2602,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
                 <span style={{ fontSize: 11.5, color: V.inkMute }}>{c.students} students</span>
                 <span className="m-serif" style={{
                   marginLeft: 'auto', fontSize: dense ? 15 : 16,
-                  color: V.ink, fontWeight: 600,
+                  color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif",
                 }}>${c.price}</span>
               </div>
             </div>
@@ -2786,7 +2805,7 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
             </div>
             <div style={{ textAlign: 'right' }}>
               <div className="m-serif" style={{
-                fontSize: dense ? 16 : 18, color: V.ink, fontWeight: 600,
+                fontSize: dense ? 16 : 18, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif",
               }}>${c.price}</div>
               <div style={{ fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
                             letterSpacing: '0.1em' }}>{c.lessons} lessons</div>
@@ -3142,7 +3161,7 @@ function CoursesScreen({ V, dense, role, openMentor }) {
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 600 }}>
+                    <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
                       ${c.price}
                     </div>
                     <div style={{ fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
@@ -3524,7 +3543,7 @@ function ExploreScreen({ V, dense, openMentor }) {
               </div>
             </div>
             <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 600 }}>
+              <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
                 ${c.price}
               </div>
             </div>
@@ -4170,9 +4189,9 @@ function ReviewsScreen({ V, dense, mentor, goBack }) {
         }}>
           {/* Big number */}
           <div style={{ textAlign: 'center', flexShrink: 0 }}>
-            <div className="m-serif" style={{
-              fontSize: dense ? 46 : 54, color: V.ink, lineHeight: 0.95,
-              fontWeight: 500,
+            <div className="m-num" style={{
+              fontSize: dense ? 48 : 56, color: V.ink, lineHeight: 0.95,
+              fontWeight: 700,
             }}>
               {m.rating.toFixed(1)}
             </div>
