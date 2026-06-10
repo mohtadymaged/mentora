@@ -111,12 +111,72 @@ window.MENTORA_SUPABASE = {
       };
     },
 
-    // Live courses (Stage 2 — available now if you want to use it).
+    // Live courses (Stage 2). All published courses, newest first.
     async courses() {
       const { data, error } = await sb.from("courses")
         .select("*").eq("published", true).order("created_at", { ascending: false });
       if (error) { console.warn("[Mentora] courses:", error.message); return []; }
       return data;
+    },
+
+    // Courses created by the signed-in teacher.
+    async myCourses() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const { data, error } = await sb.from("courses")
+        .select("*").eq("mentor_id", session.user.id).order("created_at", { ascending: false });
+      if (error) { console.warn("[Mentora] myCourses:", error.message); return []; }
+      return data;
+    },
+
+    // Create a course owned by the signed-in teacher. `c` = form fields.
+    async createCourse(c) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const row = {
+        mentor_id: session.user.id,
+        title: c.title, emoji: c.emoji || "📚",
+        price: parseInt(c.price, 10) || 0,
+        seats: parseInt(c.seats, 10) || 20,
+        lessons: parseInt(c.lessons, 10) || 0,
+        venue: c.venue || null, area: c.area || null,
+        schedule: c.schedule || null, category: c.category || null,
+        rating: 0, enrolled: 0, published: true,
+      };
+      const { data, error } = await sb.from("courses").insert(row).select().single();
+      if (error) throw error;
+      return data;
+    },
+
+    // Enroll the signed-in learner in a course. Also bumps the seat count.
+    async enroll(courseId, level) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const { error } = await sb.from("enrollments").insert({
+        course_id: courseId, learner_id: session.user.id, level: level || null,
+      });
+      if (error) {
+        if (error.code === "23505") throw new Error("You're already enrolled in this class.");
+        throw error;
+      }
+      // Best-effort seat bump (RLS may block if not the owner — ignore failure).
+      try {
+        const { data: c } = await sb.from("courses").select("enrolled").eq("id", courseId).single();
+        if (c) await sb.from("courses").update({ enrolled: (c.enrolled || 0) + 1 }).eq("id", courseId);
+      } catch (e) {}
+      return true;
+    },
+
+    // Courses the signed-in learner has joined (joined with course details).
+    async myEnrollments() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const { data, error } = await sb.from("enrollments")
+        .select("level, created_at, courses(*)").eq("learner_id", session.user.id)
+        .order("created_at", { ascending: false });
+      if (error) { console.warn("[Mentora] myEnrollments:", error.message); return []; }
+      // Flatten: return course rows with the chosen level attached.
+      return (data || []).filter(r => r.courses).map(r => ({ ...r.courses, level: r.level }));
     },
   };
   console.log("[Mentora] Supabase connected ✓");
@@ -2352,7 +2412,7 @@ function SessionDots({ V, sessions, done = 0, size = 10, color, gap = 4, max = 1
 // ─────────────────────────────────────────────────────────
 // HOME SCREEN — returning learner
 // ─────────────────────────────────────────────────────────
-function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, openMessages, openProfile, profile }) {
+function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, openMessages, openProfile, profile, liveCourses, enrollments }) {
   const pad = dense ? 14 : 18;
 
   // User profile (the signed-in learner) — from registration, or defaults.
@@ -2528,6 +2588,52 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
         } />
 
       {/* Hero enrolled course */}
+      {liveCourses ? (
+        (enrollments && enrollments.length > 0) ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12, marginBottom: dense ? 22 : 28 }}>
+            {enrollments.map(c => (
+              <div key={c.id} style={{
+                background: V.surface, border: `1px solid ${V.rule}`,
+                borderRadius: 18, padding: dense ? 12 : 14,
+                display: 'flex', alignItems: 'center', gap: 12,
+                backgroundImage: V.paper ? PAPER_NOISE : undefined,
+                backgroundSize: V.paper ? '240px 240px' : undefined,
+              }}>
+                <div style={{
+                  width: 50, height: 50, borderRadius: 12, background: V.accentBg,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 25, flexShrink: 0,
+                }}>{c.emoji || '📚'}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="m-serif" style={{ fontSize: dense ? 15 : 16, color: V.ink, lineHeight: 1.2 }}>
+                    {c.title}
+                  </div>
+                  <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                    {c.level ? `${c.level} · ` : ''}{c.area || 'El Gouna'}{c.schedule ? ` · ${c.schedule}` : ''}
+                  </div>
+                </div>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, color: V.ribbon,
+                  letterSpacing: '0.08em', textTransform: 'uppercase',
+                }}>Joined</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+        <div style={{
+          textAlign: 'center', padding: '30px 22px', marginBottom: dense ? 22 : 28,
+          background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 20,
+        }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🎒</div>
+          <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>
+            You haven't joined a class yet
+          </div>
+          <div style={{ fontSize: 12.5, color: V.inkMute, lineHeight: 1.5 }}>
+            Browse what your neighbors are teaching in Explore — your classes will live here.
+          </div>
+        </div>
+        )
+      ) : (<>
       <button onClick={openMentor} style={{
         width: '100%', textAlign: 'left', background: V.surface,
         border: `1px solid ${V.rule}`, borderRadius: 22, padding: 0,
@@ -2650,6 +2756,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
           );
         })}
       </div>
+      </>)}
 
       {/* New courses you might be interested in */}
       <SectionHead V={V}
@@ -2667,7 +2774,56 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
         display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12,
         marginBottom: dense ? 22 : 28,
       }}>
-        {RECOMMENDED.map(c => (
+        {liveCourses ? (
+          liveCourses.length > 0 ? liveCourses.slice(0, 6).map(c => {
+            const left = (c.seats || 0) - (c.enrolled || 0);
+            return (
+              <button key={c.id} onClick={() => openMentor()} className="m-tap" style={{
+                width: '100%', textAlign: 'left',
+                background: V.surface, border: `1px solid ${V.rule}`,
+                borderRadius: 18, padding: dense ? 12 : 14, overflow: 'hidden',
+                display: 'flex', alignItems: 'center', gap: 12,
+                backgroundImage: V.paper ? PAPER_NOISE : undefined,
+                backgroundSize: V.paper ? '240px 240px' : undefined,
+              }}>
+                <div style={{
+                  width: 48, height: 48, borderRadius: 12, background: V.accentBg,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 24, flexShrink: 0,
+                }}>{c.emoji || '📚'}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="m-serif" style={{ fontSize: dense ? 15 : 16, color: V.ink, lineHeight: 1.2 }}>
+                    {c.title}
+                  </div>
+                  <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                    {c.area || 'El Gouna'}{c.schedule ? ` · ${c.schedule}` : ''}
+                  </div>
+                  <div style={{ marginTop: 5, fontSize: 11, color: V.inkSoft }}>
+                    {c.enrolled || 0}/{c.seats || 0} seats
+                    {left > 0 && left <= 5 && <span style={{ color: V.accent, fontWeight: 700 }}> · {left} left</span>}
+                  </div>
+                </div>
+                <span className="m-serif" style={{ fontSize: dense ? 15 : 16,
+                  color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
+                  {c.price > 0 ? `$${c.price}` : 'Free'}
+                </span>
+              </button>
+            );
+          }) : (
+            <div style={{
+              textAlign: 'center', padding: '30px 22px',
+              background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 18,
+            }}>
+              <div style={{ fontSize: 30, marginBottom: 8 }}>🌱</div>
+              <div className="m-serif" style={{ fontSize: 15, color: V.ink, marginBottom: 4 }}>
+                No classes in El Gouna yet
+              </div>
+              <div style={{ fontSize: 12, color: V.inkMute, lineHeight: 1.5 }}>
+                Be the first neighbor to teach one.
+              </div>
+            </div>
+          )
+        ) : RECOMMENDED.map(c => (
           <button key={c.id} onClick={() => openMentor()} className="m-tap" style={{
             width: '100%', textAlign: 'left',
             background: V.surface, border: `1px solid ${V.rule}`,
@@ -2736,7 +2892,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
 // ─────────────────────────────────────────────────────────
 // TEACHER PROFILE — my courses, my calendar, my reviews
 // ─────────────────────────────────────────────────────────
-function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMessages, profile }) {
+function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMessages, profile, openCreateCourse, myLiveCourses }) {
   // The signed-in teacher is "Layla" (MENTORS[0]) — override with registration.
   const baseMe = MENTORS[0];
   const me = {
@@ -2774,7 +2930,15 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
     .filter(([d]) => +d >= TODAY)
     .reduce((sum, [_, list]) => sum + list.length, 0);
 
-  const totalEnrolled = me.courses.reduce((s, c) => s + c.students, 0);
+  // Teacher's courses: live from DB when available, else demo.
+  const teachCourses = Array.isArray(myLiveCourses)
+    ? myLiveCourses.map(c => ({
+        id: c.id, title: c.title, emoji: c.emoji || '📚',
+        students: c.enrolled || 0, rating: c.rating || 0,
+        lessons: c.lessons || 0, price: c.price || 0,
+      }))
+    : me.courses;
+  const totalEnrolled = teachCourses.reduce((s, c) => s + (c.students || 0), 0);
 
   const selectedBookings = TEACHER_BOOKINGS[selectedDay] || [];
 
@@ -2873,7 +3037,7 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
       {/* COURSES I'M TEACHING */}
       <SectionHead V={V} eyebrow="What I teach" title="My courses" dense={dense}
         action={
-          <button className="m-tap" style={{
+          <button onClick={openCreateCourse} className="m-tap" style={{
             background: V.accent, color: '#fffaf0', border: 'none',
             fontSize: 11.5, fontWeight: 600, padding: '6px 12px', borderRadius: 100,
             display: 'flex', alignItems: 'center', gap: 4,
@@ -2883,7 +3047,7 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
         display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12,
         marginBottom: dense ? 24 : 30,
       }}>
-        {me.courses.map(c => (
+        {teachCourses.map(c => (
           <div key={c.id} className="m-tap" style={{
             background: V.surface, border: `1px solid ${V.rule}`,
             borderRadius: 16, padding: dense ? 14 : 16,
@@ -2911,8 +3075,10 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
                   <strong style={{ color: V.ink }}>{c.students}</strong>
                   <span>enrolled</span>
                 </span>
-                <span style={{ width: 3, height: 3, background: V.inkMute, borderRadius: '50%' }} />
-                <span><Stars rating={c.rating} size={10} color={V.accent} /> {c.rating}</span>
+                {c.rating > 0 && (<>
+                  <span style={{ width: 3, height: 3, background: V.inkMute, borderRadius: '50%' }} />
+                  <span><Stars rating={c.rating} size={10} color={V.accent} /> {c.rating}</span>
+                </>)}
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
@@ -2924,6 +3090,24 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
             </div>
           </div>
         ))}
+        {teachCourses.length === 0 && (
+          <div style={{
+            textAlign: 'center', padding: '30px 22px',
+            background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 18,
+          }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🌱</div>
+            <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>
+              No classes yet
+            </div>
+            <div style={{ fontSize: 12.5, color: V.inkMute, lineHeight: 1.5, marginBottom: 14 }}>
+              Tap <strong>+ New</strong> to publish your first class.
+            </div>
+            <button onClick={openCreateCourse} className="m-tap" style={{
+              background: V.accent, color: '#fff', border: 'none',
+              borderRadius: 12, padding: '10px 20px', fontSize: 13, fontWeight: 700,
+            }}>+ Add a class</button>
+          </div>
+        )}
       </div>
 
       {/* MY CALENDAR — bookings */}
@@ -3126,27 +3310,38 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
 // ─────────────────────────────────────────────────────────
 // COURSES TAB — role-aware (enrolled vs teaching)
 // ─────────────────────────────────────────────────────────
-function CoursesScreen({ V, dense, role, openMentor }) {
+function CoursesScreen({ V, dense, role, openMentor, openCreateCourse, myLiveCourses, myEnrollments }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   const [filter, setFilter] = useState('all');
 
   if (isTeacher) {
+    // Live courses from DB when available; else demo list (canvas).
+    const usingLive = Array.isArray(myLiveCourses);
     const me = MENTORS[0];
-    // Teacher's courses + a draft
-    const myCourses = [
-      ...me.courses.map(c => ({
-        ...c, status: 'published',
-        nextSession: c.id === 'c1' ? 'May 23, 09:30' : null,
-      })),
-      { id: 'draft1', title: 'Advanced Portraits', emoji: '🎭', students: 0,
-        rating: null, lessons: 0, price: 99, status: 'draft', nextSession: null },
-    ];
-    const totalEnrolled = me.courses.reduce((s, c) => s + c.students, 0);
+    const myCourses = usingLive
+      ? myLiveCourses.map(c => ({
+          id: c.id, title: c.title, emoji: c.emoji || '📚',
+          students: c.enrolled || 0, rating: c.rating || null,
+          lessons: c.lessons || 0, price: c.price || 0,
+          status: c.published ? 'published' : 'draft',
+          nextSession: c.schedule || null,
+        }))
+      : [
+          ...me.courses.map(c => ({
+            ...c, status: 'published',
+            nextSession: c.id === 'c1' ? 'May 23, 09:30' : null,
+          })),
+          { id: 'draft1', title: 'Advanced Portraits', emoji: '🎭', students: 0,
+            rating: null, lessons: 0, price: 99, status: 'draft', nextSession: null },
+        ];
+    const totalEnrolled = myCourses.reduce((s, c) => s + (c.students || 0), 0);
+    const pubCount = myCourses.filter(c => c.status === 'published').length;
+    const draftCount = myCourses.filter(c => c.status === 'draft').length;
     const filters = [
       { id: 'all', label: 'All', count: myCourses.length },
-      { id: 'published', label: 'Published', count: me.courses.length },
-      { id: 'draft', label: 'Drafts', count: 1 },
+      { id: 'published', label: 'Published', count: pubCount },
+      { id: 'draft', label: 'Drafts', count: draftCount },
     ];
     const list = myCourses.filter(c => filter === 'all' ? true : c.status === filter);
 
@@ -3192,7 +3387,7 @@ function CoursesScreen({ V, dense, role, openMentor }) {
               $1,840
             </div>
           </div>
-          <button className="m-tap" style={{
+          <button onClick={openCreateCourse} className="m-tap" style={{
             background: V.accent, color: '#fffaf0', border: 'none',
             borderRadius: 12, padding: '0 18px', fontSize: 13, fontWeight: 600,
             display: 'flex', alignItems: 'center', gap: 6,
@@ -3296,12 +3491,89 @@ function CoursesScreen({ V, dense, role, openMentor }) {
               </div>
             );
           })}
+          {list.length === 0 && (
+            <div style={{
+              textAlign: 'center', padding: '34px 22px',
+              background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 18,
+            }}>
+              <div style={{ fontSize: 34, marginBottom: 10 }}>🌱</div>
+              <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>
+                No classes yet
+              </div>
+              <div style={{ fontSize: 12.5, color: V.inkMute, lineHeight: 1.5, marginBottom: 14 }}>
+                Tap <strong>+ New</strong> to publish your first class for the El Gouna community.
+              </div>
+              <button onClick={openCreateCourse} className="m-tap" style={{
+                background: V.accent, color: '#fff', border: 'none',
+                borderRadius: 12, padding: '10px 20px', fontSize: 13, fontWeight: 700,
+              }}>+ Add a class</button>
+            </div>
+          )}
         </div>
       </div>
     );
   }
+  // Learner, deployed build: real enrollments from DB.
+  if (Array.isArray(myEnrollments)) {
+    return (
+      <div className="m-fade" style={{ paddingBottom: 116, padding: `4px ${pad}px 116px`, fontFamily: V.fontSans }}>
+        <div style={{ padding: `${dense ? 6 : 12}px 2px ${dense ? 14 : 18}px` }}>
+          <div className="m-hand" style={{ fontSize: 16, color: V.ribbon, lineHeight: 1, marginBottom: 4 }}>
+            your shelf —
+          </div>
+          <div className="m-serif" style={{
+            fontSize: dense ? 26 : 30, color: V.ink, lineHeight: 1.05,
+            letterSpacing: '-0.02em', fontWeight: V.polaroid ? 500 : 400,
+          }}>
+            My <em style={{ color: V.accent, fontStyle: 'italic' }}>courses</em>
+          </div>
+        </div>
+        {myEnrollments.length === 0 ? (
+          <div style={{
+            textAlign: 'center', padding: '34px 22px',
+            background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 18,
+          }}>
+            <div style={{ fontSize: 34, marginBottom: 10 }}>🎒</div>
+            <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>
+              No classes joined yet
+            </div>
+            <div style={{ fontSize: 12.5, color: V.inkMute, lineHeight: 1.5 }}>
+              Find a neighbor's class in Explore and tap Enroll — it'll show up here.
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
+            {myEnrollments.map(c => (
+              <div key={c.id} style={{
+                background: V.surface, border: `1px solid ${V.rule}`,
+                borderRadius: 18, padding: dense ? 12 : 14,
+                display: 'flex', alignItems: 'center', gap: 12,
+                backgroundImage: V.paper ? PAPER_NOISE : undefined,
+                backgroundSize: V.paper ? '240px 240px' : undefined,
+              }}>
+                <div style={{
+                  width: 52, height: 52, borderRadius: 12, background: V.accentBg,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 26, flexShrink: 0,
+                }}>{c.emoji || '📚'}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="m-serif" style={{ fontSize: dense ? 15 : 16, color: V.ink, lineHeight: 1.2 }}>
+                    {c.title}
+                  </div>
+                  <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                    {c.level ? `${c.level} · ` : ''}{c.area || 'El Gouna'}{c.schedule ? ` · ${c.schedule}` : ''}
+                  </div>
+                  <div style={{ marginTop: 5, fontSize: 11, color: V.ribbon, fontWeight: 700,
+                    letterSpacing: '0.06em', textTransform: 'uppercase' }}>Joined</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
-  // LEARNER VIEW
   const filters = [
     { id: 'all',       label: 'All',         count: ENROLLED.length + 1 },
     { id: 'progress',  label: 'In progress', count: ENROLLED.length },
@@ -3522,7 +3794,7 @@ function CoursesScreen({ V, dense, role, openMentor }) {
 // ─────────────────────────────────────────────────────────
 // EXPLORE TAB — discover mentors / courses by category
 // ─────────────────────────────────────────────────────────
-function ExploreScreen({ V, dense, openMentor }) {
+function ExploreScreen({ V, dense, openMentor, liveCourses }) {
   const pad = dense ? 14 : 18;
   const [cat, setCat] = useState('All');
   const categories = ['All', 'Art', 'Cooking', 'Tech', 'Wellness', 'Speaking', 'Business'];
@@ -3624,44 +3896,104 @@ function ExploreScreen({ V, dense, openMentor }) {
 
       {/* Trending courses */}
       <SectionHead V={V} eyebrow="Trending this week" title="Popular courses" dense={dense} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
-        {allCourses.slice(0, 5).map(c => (
-          <button key={c.id} onClick={() => openMentor(c.mentor.id)} className="m-tap" style={{
-            width: '100%', textAlign: 'left',
-            background: V.surface, border: `1px solid ${V.rule}`,
-            borderRadius: 16, padding: dense ? 12 : 14,
-            display: 'flex', alignItems: 'center', gap: 12,
-            backgroundImage: V.paper ? PAPER_NOISE : undefined,
-            backgroundSize: V.paper ? '240px 240px' : undefined,
-          }}>
-            <div style={{
-              width: 48, height: 48, borderRadius: 12, background: V.accentBg,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 24, flexShrink: 0,
-            }}>{c.emoji}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.2 }}>
-                {c.title}
-              </div>
-              <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
-                by {c.mentor.short} · {c.students} students
-              </div>
+      {liveCourses && liveCourses.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
+          {liveCourses
+            .filter(c => cat === 'All' || c.category === cat)
+            .map(c => {
+              const left = (c.seats || 0) - (c.enrolled || 0);
+              return (
+                <button key={c.id} onClick={() => openMentor && openMentor()} className="m-tap" style={{
+                  width: '100%', textAlign: 'left',
+                  background: V.surface, border: `1px solid ${V.rule}`,
+                  borderRadius: 16, padding: dense ? 12 : 14,
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  backgroundImage: V.paper ? PAPER_NOISE : undefined,
+                  backgroundSize: V.paper ? '240px 240px' : undefined,
+                }}>
+                  <div style={{
+                    width: 48, height: 48, borderRadius: 12, background: V.accentBg,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 24, flexShrink: 0,
+                  }}>{c.emoji || '📚'}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.2 }}>
+                      {c.title}
+                    </div>
+                    <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                      {c.area ? c.area : 'El Gouna'}{c.schedule ? ` · ${c.schedule}` : ''}
+                    </div>
+                    <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: V.inkSoft }}>
+                      <span>{c.enrolled || 0}/{c.seats || 0} seats</span>
+                      {left > 0 && left <= 5 && (
+                        <span style={{ color: V.accent, fontWeight: 700 }}>· {left} left</span>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
+                      {c.price > 0 ? `$${c.price}` : 'Free'}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+        </div>
+      ) : liveCourses ? (
+        // Connected, but no published courses yet — friendly empty state.
+        <div style={{
+          textAlign: 'center', padding: '34px 22px',
+          background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 18,
+        }}>
+          <div style={{ fontSize: 34, marginBottom: 10 }}>🌱</div>
+          <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>
+            No classes yet
+          </div>
+          <div style={{ fontSize: 12.5, color: V.inkMute, lineHeight: 1.5 }}>
+            Be the first in El Gouna to teach — a neighbor's class will show up here.
+          </div>
+        </div>
+      ) : (
+        // Demo build (no backend) — original sample list.
+        <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
+          {allCourses.slice(0, 5).map(c => (
+            <button key={c.id} onClick={() => openMentor(c.mentor.id)} className="m-tap" style={{
+              width: '100%', textAlign: 'left',
+              background: V.surface, border: `1px solid ${V.rule}`,
+              borderRadius: 16, padding: dense ? 12 : 14,
+              display: 'flex', alignItems: 'center', gap: 12,
+              backgroundImage: V.paper ? PAPER_NOISE : undefined,
+              backgroundSize: V.paper ? '240px 240px' : undefined,
+            }}>
               <div style={{
-                marginTop: 5, display: 'flex', alignItems: 'center', gap: 5,
-                fontSize: 11, color: V.ink,
-              }}>
-                <Stars rating={c.rating} size={10} color={V.accent} />
-                <span style={{ fontWeight: 600 }}>{c.rating}</span>
+                width: 48, height: 48, borderRadius: 12, background: V.accentBg,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 24, flexShrink: 0,
+              }}>{c.emoji}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.2 }}>
+                  {c.title}
+                </div>
+                <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                  by {c.mentor.short} · {c.students} students
+                </div>
+                <div style={{
+                  marginTop: 5, display: 'flex', alignItems: 'center', gap: 5,
+                  fontSize: 11, color: V.ink,
+                }}>
+                  <Stars rating={c.rating} size={10} color={V.accent} />
+                  <span style={{ fontWeight: 600 }}>{c.rating}</span>
+                </div>
               </div>
-            </div>
-            <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                ${c.price}
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
+                  ${c.price}
+                </div>
               </div>
-            </div>
-          </button>
-        ))}
-      </div>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -5167,6 +5499,175 @@ function RoleScreen({ V, dense, os, onPick, goBack }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// CREATE COURSE — teacher adds a class (writes to DB on deployed build)
+// ─────────────────────────────────────────────────────────
+function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
+  const pad = dense ? 22 : 28;
+  const EMOJIS = ['🎨','🍳','💻','🧘','🎤','💰','📷','🎸','🪡','🌿','📖','🎭'];
+  const CATS = ['Art','Cooking','Tech','Wellness','Speaking','Business','Music','Craft'];
+  const AREAS = ['Downtown','Abu Tig Marina','Tawila','Zeytuna','Fanadir','South Marina','Other'];
+  const [c, setC] = useState({
+    title: '', emoji: '🎨', category: 'Art', price: '', seats: '', lessons: '',
+    venue: '', area: 'Downtown', schedule: '',
+  });
+  const [focus, setFocus] = useState(null);
+  const [err, setErr] = useState('');
+  const set = (k, v) => setC(p => ({ ...p, [k]: v }));
+
+  const submit = () => {
+    setErr('');
+    if (!c.title.trim()) { setErr('Give your class a name.'); return; }
+    if (!c.price) { setErr('Set a price (0 is fine for free).'); return; }
+    onCreate(c, setErr);
+  };
+
+  const fieldWrap = (name) => ({
+    background: V.surface, border: `1px solid ${focus === name ? V.accent : V.rule}`,
+    borderRadius: 12, padding: '11px 14px',
+    boxShadow: focus === name ? `0 0 0 3px ${V.accent}22` : 'none',
+    transition: 'box-shadow .15s ease, border-color .15s ease',
+    display: 'flex', alignItems: 'center', gap: 8,
+  });
+  const labelStyle = { fontSize: 10.5, letterSpacing: '0.14em', textTransform: 'uppercase',
+    color: V.inkMute, fontWeight: 600, marginBottom: 6 };
+  const inputStyle = { flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+    outline: 'none', fontSize: 15, color: V.ink, fontFamily: V.fontSans, padding: 0 };
+
+  const Field = (name, label, opts = {}) => (
+    <label style={{ display: 'block', flex: opts.flex || 'auto' }}>
+      <div style={labelStyle}>{label}</div>
+      <div style={fieldWrap(name)}>
+        {opts.prefix && <span style={{ color: V.inkMute, fontSize: 15 }}>{opts.prefix}</span>}
+        <input type={opts.type || 'text'} value={c[name]} inputMode={opts.inputMode}
+          placeholder={opts.ph || ''}
+          onChange={e => set(name, e.target.value)}
+          onFocus={() => setFocus(name)} onBlur={() => setFocus(null)}
+          style={inputStyle} />
+      </div>
+    </label>
+  );
+
+  return (
+    <div data-screen-label="Create Course" className="m-fade" style={{
+      minHeight: '100%', display: 'flex', flexDirection: 'column',
+      fontFamily: V.fontSans, color: V.ink, paddingBottom: 16,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: `4px ${pad}px ${dense ? 6 : 10}px` }}>
+        <button onClick={goBack} className="m-tap" style={{
+          width: 36, height: 36, borderRadius: '50%', background: V.surface,
+          border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: V.ink,
+        }}>{Icon.back(18)}</button>
+      </div>
+
+      <BlurFade delay={0.05} duration={0.5} yOffset={8}>
+        <div style={{ padding: `${dense ? 8 : 14}px ${pad}px ${dense ? 14 : 20}px` }}>
+          <div className="m-hand" style={{ color: V.ribbon, fontSize: 17, marginBottom: 4 }}>
+            share your craft —
+          </div>
+          <h1 className="m-serif" style={{
+            fontSize: dense ? 26 : 30, color: V.ink, lineHeight: 1.05,
+            letterSpacing: '-0.02em', margin: 0, fontWeight: V.polaroid ? 500 : 400,
+          }}>
+            Add a <em style={{ fontStyle: 'italic', color: V.accent }}>class</em>
+          </h1>
+        </div>
+      </BlurFade>
+
+      <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
+        {/* Emoji picker */}
+        <div>
+          <div style={labelStyle}>Pick an icon</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {EMOJIS.map(e => {
+              const on = c.emoji === e;
+              return (
+                <button key={e} type="button" onClick={() => set('emoji', e)} className="m-tap" style={{
+                  width: 42, height: 42, borderRadius: 12, fontSize: 22,
+                  background: on ? V.accent : V.surface,
+                  border: `1px solid ${on ? V.accent : V.rule}`,
+                  boxShadow: on ? `0 6px 14px ${V.accent}40` : 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'background .15s ease, transform .15s ease',
+                  transform: on ? 'scale(1.05)' : 'scale(1)',
+                }}>{e}</button>
+              );
+            })}
+          </div>
+        </div>
+
+        {Field('title', 'Class name', { ph: 'e.g. Modern Watercolor' })}
+
+        {/* Category chips */}
+        <div>
+          <div style={labelStyle}>Category</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+            {CATS.map(cat => {
+              const on = c.category === cat;
+              return (
+                <button key={cat} type="button" onClick={() => set('category', cat)} className="m-tap" style={{
+                  background: on ? V.accent : V.surface, color: on ? '#fff' : V.ink,
+                  border: `1px solid ${on ? V.accent : V.rule}`,
+                  padding: '7px 13px', borderRadius: 100, fontSize: 12.5, fontWeight: 600,
+                }}>{cat}</button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Price + seats + lessons row */}
+        <div style={{ display: 'flex', gap: 10 }}>
+          {Field('price', 'Price', { prefix: '$', type: 'number', inputMode: 'numeric', ph: '0', flex: 1 })}
+          {Field('seats', 'Seats', { type: 'number', inputMode: 'numeric', ph: '20', flex: 1 })}
+          {Field('lessons', 'Sessions', { type: 'number', inputMode: 'numeric', ph: '8', flex: 1 })}
+        </div>
+
+        {Field('venue', 'Venue', { ph: 'e.g. Marina Art Loft, or my home studio' })}
+
+        {/* Area (Gouna district) */}
+        <div>
+          <div style={labelStyle}>Area in El Gouna</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+            {AREAS.map(a => {
+              const on = c.area === a;
+              return (
+                <button key={a} type="button" onClick={() => set('area', a)} className="m-tap" style={{
+                  background: on ? V.accentBg : V.surface, color: on ? V.accent : V.ink,
+                  border: `1px solid ${on ? V.accent : V.rule}`, fontWeight: 600,
+                  padding: '7px 12px', borderRadius: 100, fontSize: 12,
+                }}>{a}</button>
+              );
+            })}
+          </div>
+        </div>
+
+        {Field('schedule', 'Schedule', { ph: 'e.g. Tue & Thu · 6–8pm' })}
+
+        {err && (
+          <div style={{ fontSize: 12.5, color: '#fff', background: V.accent,
+            padding: '9px 12px', borderRadius: 10, fontWeight: 500 }}>{err}</div>
+        )}
+      </div>
+
+      <div style={{ padding: `${dense ? 16 : 22}px ${pad}px 0` }}>
+        <button onClick={submit} disabled={busy} className="m-tap" style={{
+          width: '100%', background: V.accent, color: '#fff', border: 'none',
+          borderRadius: 16, padding: '16px 0', fontSize: 15, fontWeight: 700,
+          letterSpacing: '0.01em', boxShadow: `0 10px 22px ${V.accent}45`,
+          opacity: busy ? 0.6 : 1,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        }}>
+          {busy ? 'Publishing…' : <>Publish class {Icon.arrow(17, '#fff')}</>}
+        </button>
+        <div className="m-hand" style={{ textAlign: 'center', color: V.inkMute, fontSize: 14, marginTop: 10 }}>
+          — your neighbors will see it right away —
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
 // LOGIN — returning users (email + password)
 // ─────────────────────────────────────────────────────────
 function LoginScreen({ V, dense, os, onLogin, goBack, busy }) {
@@ -5867,7 +6368,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
 // ENROLL SCREEN — course enrollment checkout + confirmation
 // (Reuses the 'booking' screen slot.)
 // ─────────────────────────────────────────────────────────
-function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, initialBookingState }) {
+function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll, initialBookingState }) {
   const m = mentor || MENTORS[0];
   // Default to first course if not specified
   const c = course || (m.courses && m.courses[0]) || { title: 'Course', price: 0, lessons: 0, seats: 0, students: 0, emoji: '📘' };
@@ -5875,6 +6376,8 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, initialB
 
   const [agreed, setAgreed]       = useState(true);
   const [confirmed, setConfirmed] = useState(initialBookingState?.confirmed ?? false);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollErr, setEnrollErr] = useState('');
   // Default to first non-locked level for courses with levels
   const defaultLevel = c.levels && (c.levels.find(l => l.status !== 'locked') || c.levels[0]);
   const [selectedLevel, setSelectedLevel] = useState(defaultLevel ? defaultLevel.id : null);
@@ -6332,19 +6835,34 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, initialB
         backgroundImage: V.paper ? PAPER_NOISE : undefined,
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
+        {enrollErr && (
+          <div style={{ margin: `0 0 10px`, fontSize: 12.5, color: '#fff', background: V.accent,
+            padding: '9px 12px', borderRadius: 10, fontWeight: 500 }}>{enrollErr}</div>
+        )}
         <button
-          disabled={!agreed}
-          onClick={() => setConfirmed(true)}
+          disabled={!agreed || enrolling}
+          onClick={() => {
+            setEnrollErr('');
+            if (onEnroll) {
+              setEnrolling(true);
+              Promise.resolve(onEnroll(c, selectedLevel))
+                .then(() => setConfirmed(true))
+                .catch(err => setEnrollErr(err.message || 'Could not enroll.'))
+                .finally(() => setEnrolling(false));
+            } else {
+              setConfirmed(true);
+            }
+          }}
           className="m-tap" style={{
             width: '100%', background: V.accent, color: '#fffaf0',
             border: 'none', borderRadius: 14, padding: '15px 0',
             fontSize: 15, fontWeight: 600, letterSpacing: '0.01em',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             boxShadow: agreed ? `0 10px 22px ${V.accent}40` : 'none',
-            opacity: agreed ? 1 : 0.4,
+            opacity: (agreed && !enrolling) ? 1 : 0.5,
             transition: 'opacity .15s ease, box-shadow .15s ease',
           }}>
-          Enroll for ${total} {Icon.arrow(16, '#fffaf0')}
+          {enrolling ? 'Enrolling…' : <>Enroll for ${total} {Icon.arrow(16, '#fffaf0')}</>}
         </button>
       </div>
     </div>
@@ -6920,7 +7438,49 @@ function MentoraApp({ variant, os, density, scope,
     setProfile(null);
     setScreen('landing');
   };
+  const handleCreateCourse = (c, setErr) => {
+    if (!DB) { setScreen('home'); return; }   // demo build: no backend
+    setAuthBusy(true);
+    DB.createCourse(c)
+      .then(() => setScreen('home'))
+      .catch(err => { if (setErr) setErr(err.message || 'Could not publish.'); })
+      .finally(() => setAuthBusy(false));
+  };
+  // Enroll the learner (returns a promise the BookingScreen awaits).
+  const handleEnroll = (course, level) => {
+    if (!DB || !course) return Promise.resolve();
+    return DB.enroll(course.id, level).then(() => {
+      DB.myEnrollments().then(setLiveEnrollments).catch(() => {});
+      DB.courses().then(setLiveCourses).catch(() => {});
+    });
+  };
   const scrollRef = React.useRef(null);
+  // Live courses from the database (deployed build only). null = demo/no backend.
+  const [liveCourses, setLiveCourses] = useState(null);
+  const [liveCoursesMine, setLiveCoursesMine] = useState(null);
+  const [liveEnrollments, setLiveEnrollments] = useState(null);
+  React.useEffect(() => {
+    if (!DB || !fullScreen) return;
+    DB.courses().then(setLiveCourses).catch(() => setLiveCourses([]));
+    if (role === 'teacher') DB.myCourses().then(setLiveCoursesMine).catch(() => setLiveCoursesMine([]));
+    else DB.myEnrollments().then(setLiveEnrollments).catch(() => setLiveEnrollments([]));
+  }, []);
+  // Reload when landing on Explore/Home/Courses so freshly published classes show.
+  React.useEffect(() => {
+    if (!DB || !fullScreen) return;
+    if (screen === 'explore' || screen === 'home') {
+      DB.courses().then(setLiveCourses).catch(() => {});
+    }
+    if (screen === 'courses' && role === 'teacher') {
+      DB.myCourses().then(setLiveCoursesMine).catch(() => {});
+    }
+    if (screen === 'home' && role === 'teacher') {
+      DB.myCourses().then(setLiveCoursesMine).catch(() => {});
+    }
+    if ((screen === 'home' || screen === 'courses') && role !== 'teacher') {
+      DB.myEnrollments().then(setLiveEnrollments).catch(() => {});
+    }
+  }, [screen]);
   // Reset scroll to top whenever the screen changes (so Home/Courses/etc.
   // always open at the top, not wherever the previous screen was scrolled).
   React.useEffect(() => {
@@ -6954,7 +7514,7 @@ function MentoraApp({ variant, os, density, scope,
   };
 
   const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
-  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat'; // these have their own bottom bars
+  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat' || screen === 'createCourse'; // these have their own bottom bars
   // Which tab reads as active (messages screen lights the Messages tab;
   // settings screen lights the Profile tab).
   const activeTab = screen === 'messages' ? 'messages'
@@ -7006,12 +7566,20 @@ function MentoraApp({ variant, os, density, scope,
                        onLogin={handleLogin}
                        goBack={() => setScreen('welcome')} />
         )}
+        {screen === 'createCourse' && (
+          <CreateCourseScreen V={V} dense={dense} os={os}
+                              busy={authBusy}
+                              onCreate={handleCreateCourse}
+                              goBack={() => setScreen('home')} />
+        )}
         {screen === 'home' && (role === 'teacher' ? (
           <TeacherProfileScreen V={V} dense={dense}
                                 profile={profile}
                                 openReviews={openReviews}
                                 openNotifications={openNotifications}
-                                openMessages={openMessages} />
+                                openMessages={openMessages}
+                                myLiveCourses={liveCoursesMine}
+                                openCreateCourse={() => setScreen('createCourse')} />
         ) : (
           <HomeScreen V={V} dense={dense}
                       profile={profile}
@@ -7020,6 +7588,8 @@ function MentoraApp({ variant, os, density, scope,
                       openReviews={openReviews}
                       openNotifications={openNotifications}
                       openMessages={openMessages}
+                      liveCourses={liveCourses}
+                      enrollments={liveEnrollments}
                       onBackToLanding={() => setScreen('landing')} />
         ))}
         {screen === 'mentor' && (
@@ -7034,10 +7604,14 @@ function MentoraApp({ variant, os, density, scope,
         )}
         {screen === 'courses' && (
           <CoursesScreen V={V} dense={dense} role={role}
-                         openMentor={openMentor} />
+                         openMentor={openMentor}
+                         myLiveCourses={liveCoursesMine}
+                         myEnrollments={liveEnrollments}
+                         openCreateCourse={() => setScreen('createCourse')} />
         )}
         {screen === 'explore' && (
           <ExploreScreen V={V} dense={dense}
+                         liveCourses={liveCourses}
                          openMentor={openMentor} />
         )}
         {screen === 'settings' && (
@@ -7050,6 +7624,7 @@ function MentoraApp({ variant, os, density, scope,
                          course={activeCourse}
                          goBack={goBack}
                          initialBookingState={initialBookingState}
+                         onEnroll={DB ? handleEnroll : null}
                          onConfirmed={() => setScreen('courses')} />
         )}
         {screen === 'notifications' && (
