@@ -413,6 +413,118 @@ window.MENTORA_SUPABASE = {
       // Flatten: return course rows with the chosen level attached.
       return (data || []).filter(r => r.courses).map(r => ({ ...r.courses, level: r.level }));
     },
+
+    // ── Sessions & bookings (live calendar) ─────────────────
+    // A session is a dated event a mentor schedules; learners book a spot.
+    // Create a session owned by the signed-in teacher.
+    async createSession(s) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const row = {
+        mentor_id: session.user.id,
+        course_id: s.courseId || null,
+        title: s.title,
+        starts_at: s.startsAt,                       // ISO string
+        duration_min: parseInt(s.durationMin, 10) || 60,
+        capacity: parseInt(s.capacity, 10) || 1,
+        location: s.location || null,
+      };
+      const { data, error } = await sb.from("sessions").insert(row).select().single();
+      if (error) throw error;
+      return data;
+    },
+
+    // The signed-in teacher's own sessions (with booking counts).
+    async mySessions() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const { data, error } = await sb.from("sessions")
+        .select("*, session_bookings(count)")
+        .eq("mentor_id", session.user.id)
+        .order("starts_at", { ascending: true });
+      if (error) { console.warn("[Mentora] mySessions:", error.message); return []; }
+      return (data || []).map(function (s) {
+        var booked = (s.session_bookings && s.session_bookings[0] && s.session_bookings[0].count) || 0;
+        return { id: s.id, title: s.title, courseId: s.course_id, startsAt: s.starts_at,
+                 durationMin: s.duration_min, capacity: s.capacity, location: s.location, booked: booked };
+      });
+    },
+
+    // Delete one of the teacher's sessions.
+    async deleteSession(id) {
+      const { error } = await sb.from("sessions").delete().eq("id", id);
+      if (error) throw error;
+      return true;
+    },
+
+    // A mentor's UPCOMING sessions (for a learner to browse + book), with seats left.
+    async mentorSessions(mentorId) {
+      const nowIso = new Date().toISOString();
+      const { data, error } = await sb.from("sessions")
+        .select("*, session_bookings(count)")
+        .eq("mentor_id", mentorId)
+        .gte("starts_at", nowIso)
+        .order("starts_at", { ascending: true });
+      if (error) { console.warn("[Mentora] mentorSessions:", error.message); return []; }
+      const { data: { session } } = await sb.auth.getSession();
+      const me = session ? session.user.id : null;
+      // Which of these the learner already booked.
+      var mine = {};
+      if (me && data && data.length) {
+        const ids = data.map(s => s.id);
+        const { data: bk } = await sb.from("session_bookings")
+          .select("session_id").eq("learner_id", me).in("session_id", ids);
+        (bk || []).forEach(b => { mine[b.session_id] = true; });
+      }
+      return (data || []).map(function (s) {
+        var booked = (s.session_bookings && s.session_bookings[0] && s.session_bookings[0].count) || 0;
+        return { id: s.id, title: s.title, courseId: s.course_id, startsAt: s.starts_at,
+                 durationMin: s.duration_min, capacity: s.capacity, location: s.location,
+                 booked: booked, seatsLeft: Math.max(0, (s.capacity || 0) - booked),
+                 bookedByMe: !!mine[s.id] };
+      });
+    },
+
+    // Learner books a spot in a session.
+    async bookSession(sessionId) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const { error } = await sb.from("session_bookings")
+        .insert({ session_id: sessionId, learner_id: session.user.id });
+      if (error) {
+        if ((error.message || "").toLowerCase().includes("duplicate")) return true; // already booked
+        throw error;
+      }
+      return true;
+    },
+
+    // Learner cancels their booking.
+    async cancelBooking(sessionId) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const { error } = await sb.from("session_bookings")
+        .delete().eq("session_id", sessionId).eq("learner_id", session.user.id);
+      if (error) throw error;
+      return true;
+    },
+
+    // The signed-in learner's upcoming booked sessions (with mentor + title).
+    async myBookings() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const nowIso = new Date().toISOString();
+      const { data, error } = await sb.from("session_bookings")
+        .select("session_id, sessions!inner(id, title, starts_at, duration_min, location, mentor_id, profiles(full_name))")
+        .eq("learner_id", session.user.id)
+        .gte("sessions.starts_at", nowIso)
+        .order("sessions(starts_at)", { ascending: true });
+      if (error) { console.warn("[Mentora] myBookings:", error.message); return []; }
+      return (data || []).filter(r => r.sessions).map(function (r) {
+        var s = r.sessions; var p = s.profiles || {};
+        return { id: s.id, title: s.title, startsAt: s.starts_at, durationMin: s.duration_min,
+                 location: s.location, mentorName: p.full_name || "Mentor" };
+      });
+    },
   };
   console.log("[Mentora] Supabase connected ✓");
 })();
@@ -3128,6 +3240,113 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
 }
 
 // ─────────────────────────────────────────────────────────
+// SESSION FORM — teacher schedules a new calendar session
+// ─────────────────────────────────────────────────────────
+function SessionForm({ V, dense, courses, onClose, onCreate }) {
+  const pad = dense ? 14 : 18;
+  const now = new Date();
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const todayStr = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  const nextHour = (now.getHours() + 1) % 24;
+  const [title, setTitle] = React.useState('');
+  const [courseId, setCourseId] = React.useState('');
+  const [date, setDate] = React.useState(todayStr);
+  const [time, setTime] = React.useState(`${pad2(nextHour)}:00`);
+  const [duration, setDuration] = React.useState(60);
+  const [capacity, setCapacity] = React.useState(6);
+  const [location, setLocation] = React.useState('');
+  const canSave = title.trim() && date && time;
+  const submit = () => {
+    if (!canSave) return;
+    const startsAt = new Date(`${date}T${time}`).toISOString();
+    onCreate({
+      title: title.trim(), courseId: courseId || null, startsAt,
+      durationMin: duration, capacity, location: location.trim() || null,
+    });
+  };
+  const field = {
+    width: '100%', background: V.bg, border: `1px solid ${V.rule}`,
+    borderRadius: 12, padding: '11px 13px', fontSize: 14, color: V.ink,
+    outline: 'none', fontFamily: V.fontSans, boxSizing: 'border-box',
+  };
+  const label = { fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase',
+    color: V.inkMute, fontWeight: 600, marginBottom: 6, display: 'block' };
+  const overlay = (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 60,
+      background: 'rgba(20,16,12,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+    }}>
+      <div onClick={e => e.stopPropagation()} className="m-fade" style={{
+        width: '100%', maxWidth: 440, background: V.bg,
+        borderRadius: '22px 22px 0 0', padding: `14px ${pad}px calc(${pad}px + 8px)`,
+        maxHeight: '88%', overflowY: 'auto',
+        boxShadow: '0 -8px 30px rgba(20,16,12,0.25)',
+      }}>
+        <div style={{ width: 40, height: 4, borderRadius: 100, background: V.rule, margin: '0 auto 14px' }} />
+        <div className="m-serif" style={{ fontSize: 19, color: V.ink, marginBottom: 2,
+          fontWeight: V.polaroid ? 500 : 400 }}>New session</div>
+        <div style={{ fontSize: 12, color: V.inkMute, marginBottom: 16 }}>
+          Schedule a class or 1:1 for your neighbours to book.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={label}>Title</label>
+            <input value={title} onChange={e => setTitle(e.target.value)} style={field}
+              placeholder="e.g. Sunday watercolor by the lagoon" />
+          </div>
+          {courses && courses.length > 0 && (
+            <div>
+              <label style={label}>Class (optional)</label>
+              <select value={courseId} onChange={e => setCourseId(e.target.value)} style={field}>
+                <option value="">— None —</option>
+                {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+              </select>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <label style={label}>Date</label>
+              <input type="date" value={date} min={todayStr} onChange={e => setDate(e.target.value)} style={field} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={label}>Time</label>
+              <input type="time" value={time} onChange={e => setTime(e.target.value)} style={field} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <label style={label}>Duration (min)</label>
+              <input type="number" min="15" step="15" value={duration}
+                onChange={e => setDuration(+e.target.value)} style={field} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={label}>Seats</label>
+              <input type="number" min="1" value={capacity}
+                onChange={e => setCapacity(+e.target.value)} style={field} />
+            </div>
+          </div>
+          <div>
+            <label style={label}>Location (optional)</label>
+            <input value={location} onChange={e => setLocation(e.target.value)} style={field}
+              placeholder="e.g. Abu Tig Marina, Zone 3" />
+          </div>
+          <button onClick={submit} disabled={!canSave} className="m-tap" style={{
+            width: '100%', background: canSave ? V.accent : V.rule,
+            color: canSave ? '#fffaf0' : V.inkMute, border: 'none',
+            borderRadius: 100, padding: '14px 0', fontSize: 15, fontWeight: 700,
+            cursor: canSave ? 'pointer' : 'default',
+            boxShadow: canSave ? `0 8px 18px ${V.accent}38` : 'none',
+          }}>Add to calendar</button>
+        </div>
+      </div>
+    </div>
+  );
+  return (typeof ReactDOM !== 'undefined' && ReactDOM.createPortal)
+    ? ReactDOM.createPortal(overlay, document.body)
+    : overlay;
+}
+
+// ─────────────────────────────────────────────────────────
 // TEACHER PROFILE — my courses, my calendar, my reviews
 // ─────────────────────────────────────────────────────────
 function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMessages, profile, openCreateCourse, myLiveCourses }) {
@@ -3152,11 +3371,44 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
   const TODAY = _now.getDate();
   const dayNames = ['S','M','T','W','T','F','S'];
   // Real bookings keyed by day-of-month. Empty until a sessions backend exists.
-  const BOOKINGS = {};
-
   const [selectedDay, setSelectedDay] = useState(TODAY);
-  // Real reviews received across this teacher's classes (deployed build).
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  // Real scheduled sessions (deployed build). Built into BOOKINGS keyed by day.
+  const [mySessions, setMySessions] = React.useState(null);
+  const [sessionFormOpen, setSessionFormOpen] = React.useState(false);
+  const loadSessions = React.useCallback(() => {
+    if (!DB || !DB.mySessions) { setMySessions([]); return; }
+    DB.mySessions().then(s => setMySessions(s || [])).catch(() => setMySessions([]));
+  }, [DB]);
+  React.useEffect(() => { loadSessions(); }, [loadSessions]);
+  const handleCreateSession = (form) => {
+    if (!DB) { setSessionFormOpen(false); return; }
+    DB.createSession(form).then(() => { setSessionFormOpen(false); loadSessions(); })
+      .catch(err => alert(err.message || 'Could not create session.'));
+  };
+  const onDeleteSession = (id) => {
+    if (!DB || !id) return;
+    DB.deleteSession(id).then(loadSessions).catch(() => {});
+  };
+  const sessionsList = DB ? (mySessions || []) : [];
+  const BOOKINGS = {};
+  sessionsList.forEach(s => {
+    const d = new Date(s.startsAt);
+    if (d.getFullYear() === YEAR && d.getMonth() === _mIdx) {
+      const day = d.getDate();
+      (BOOKINGS[day] = BOOKINGS[day] || []).push({
+        id: s.id, title: s.title, booked: s.booked || 0, capacity: s.capacity,
+        durationMin: s.durationMin,
+        time: d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+        _ts: d.getTime(),
+      });
+    }
+  });
+  Object.values(BOOKINGS).forEach(list => list.sort((a, b) => a._ts - b._ts));
+  const nowTs = Date.now();
+  const totalUpcomingBookings = sessionsList.filter(s => new Date(s.startsAt).getTime() >= nowTs).length;
+
+  // Real reviews received across this teacher's classes (deployed build).
   const [liveReviews, setLiveReviews] = React.useState(null);
   React.useEffect(() => {
     if (!DB || !DB.myReceivedReviews) return;
@@ -3191,10 +3443,6 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
     if (isPast) kind = 'past';
     cells.push({ kind, day: d, isToday, count: bookings ? bookings.length : 0 });
   }
-
-  const totalUpcomingBookings = Object.entries(BOOKINGS)
-    .filter(([d]) => +d >= TODAY)
-    .reduce((sum, [_, list]) => sum + list.length, 0);
 
   // Teacher's courses: live from DB when available, else demo.
   const teachCourses = Array.isArray(myLiveCourses)
@@ -3368,12 +3616,14 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
         )}
       </div>
 
-      {/* MY CALENDAR — bookings */}
-      <SectionHead V={V} eyebrow="What's on" title="My calendar" dense={dense}
+      {/* MY CALENDAR — real sessions */}
+      <SectionHead V={V} eyebrow={`${totalUpcomingBookings} upcoming`} title="My calendar" dense={dense}
         action={
-          <span style={{ fontSize: 11, color: V.inkMute }}>
-            <strong style={{ color: V.ink }}>{totalUpcomingBookings}</strong> upcoming
-          </span>
+          <button onClick={() => setSessionFormOpen(true)} className="m-tap" style={{
+            background: V.accent, color: '#fffaf0', border: 'none',
+            fontSize: 11.5, fontWeight: 600, padding: '6px 12px', borderRadius: 100,
+            display: 'flex', alignItems: 'center', gap: 4,
+          }}>+ New</button>
         } />
       <div style={{
         background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 18,
@@ -3478,35 +3728,32 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {selectedBookings.map((b, i) => (
-              <div key={i} className="m-tap" style={{
+              <div key={b.id || i} style={{
                 background: V.surface, border: `1px solid ${V.rule}`,
                 borderRadius: 14, padding: dense ? '10px 12px' : '12px 14px',
                 display: 'flex', alignItems: 'center', gap: 12,
               }}>
                 <div className="m-serif" style={{
-                  fontSize: dense ? 15 : 17, color: V.ink, fontWeight: 600,
-                  minWidth: 50, lineHeight: 1,
+                  fontSize: dense ? 14 : 15, color: V.accent, fontWeight: 700,
+                  minWidth: 58, lineHeight: 1.1,
                 }}>{b.time}</div>
-                <div style={{
-                  width: 32, height: 32, borderRadius: '50%',
-                  background: V.accentBg, color: V.ink, fontWeight: 700,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 12, flexShrink: 0,
-                }}>{b.avatar}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="m-serif" style={{ fontSize: 13.5, color: V.ink, lineHeight: 1.2 }}>
-                    {b.with}
+                    {b.title}
                   </div>
-                  <div style={{ fontSize: 10.5, color: V.inkMute, marginTop: 1 }}>
-                    {b.course} · 30 min
+                  <div style={{ fontSize: 10.5, color: V.inkMute, marginTop: 2,
+                    display: 'flex', alignItems: 'center', gap: 5 }}>
+                    {Icon.users(11, V.inkMute)}
+                    <span><strong style={{ color: V.ink }}>{b.booked}</strong>/{b.capacity} booked</span>
+                    {b.durationMin ? <><span style={{ width: 3, height: 3, background: V.inkMute, borderRadius: '50%' }} /> {b.durationMin} min</> : null}
                   </div>
                 </div>
-                <button style={{
+                <button onClick={() => onDeleteSession && onDeleteSession(b.id)} aria-label="Delete session" className="m-tap" style={{
                   width: 30, height: 30, borderRadius: '50%',
                   background: 'transparent', border: `1px solid ${V.rule}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: V.inkSoft, flexShrink: 0,
-                }}>{Icon.message(14)}</button>
+                  color: V.inkSoft, flexShrink: 0, fontSize: 14,
+                }}>✕</button>
               </div>
             ))}
           </div>
@@ -3584,6 +3831,11 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
         <div className="m-hand" style={{
           textAlign: 'center', marginTop: 26, color: V.inkMute, fontSize: 17,
         }}>— thank you for showing up —</div>
+      )}
+
+      {sessionFormOpen && (
+        <SessionForm V={V} dense={dense} courses={teachCourses}
+                     onClose={() => setSessionFormOpen(false)} onCreate={handleCreateSession} />
       )}
     </div>
   );
@@ -4588,6 +4840,28 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMe
   // Entrance gate for the animated stats (count-up + stagger).
   const [statsIn, setStatsIn] = React.useState(false);
   React.useEffect(() => { const t = setTimeout(() => setStatsIn(true), 120); return () => clearTimeout(t); }, [m.id]);
+  // Mentor's upcoming bookable sessions (deployed build).
+  const DBs = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const [sessions, setSessions] = React.useState(null);
+  const [busyBook, setBusyBook] = React.useState(null);
+  const loadMentorSessions = React.useCallback(() => {
+    if (!DBs || !DBs.mentorSessions || !m.id) { setSessions([]); return; }
+    DBs.mentorSessions(m.id).then(s => setSessions(s || [])).catch(() => setSessions([]));
+  }, [DBs, m.id]);
+  React.useEffect(() => { loadMentorSessions(); }, [loadMentorSessions]);
+  const toggleBooking = (s) => {
+    if (!DBs) return;
+    setBusyBook(s.id);
+    const op = s.bookedByMe ? DBs.cancelBooking(s.id) : DBs.bookSession(s.id);
+    op.then(loadMentorSessions).catch(err => alert(err.message || 'Could not update booking.'))
+      .finally(() => setBusyBook(null));
+  };
+  const fmtSession = (iso) => {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+      + ' · ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  };
   // Live mentors (from the DB) lack demo-only fields like mutuals/yearsTeaching.
   const isLive = !Array.isArray(m.mutuals);
   const courseList = m.courses || [];
@@ -4779,6 +5053,50 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMe
             fontSize: 15, lineHeight: 1.55, color: V.ink, margin: 0,
             fontStyle: 'italic',
           }}>"{m.bio}"</p>
+        </div>
+      )}
+
+      {/* Upcoming sessions — real, bookable (deployed build only) */}
+      {DBs && Array.isArray(sessions) && sessions.length > 0 && (
+        <div style={{ padding: `${dense ? 20 : 26}px ${pad}px 0` }}>
+          <SectionHead V={V} eyebrow="Book a spot" title="Upcoming sessions" dense={dense} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
+            {sessions.map(s => {
+              const full = s.seatsLeft <= 0 && !s.bookedByMe;
+              return (
+                <div key={s.id} style={{
+                  background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16,
+                  padding: dense ? 13 : 15, display: 'flex', alignItems: 'center', gap: 12,
+                  backgroundImage: V.paper ? PAPER_NOISE : undefined,
+                  backgroundSize: V.paper ? '240px 240px' : undefined,
+                }}>
+                  <div style={{
+                    width: 44, height: 44, borderRadius: 12, background: V.accentBg, flexShrink: 0,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', color: V.accent,
+                  }}>{Icon.calendar(20, V.accent)}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.2 }}>{s.title}</div>
+                    <div style={{ fontSize: 11, color: V.inkMute, marginTop: 3 }}>{fmtSession(s.startsAt)}</div>
+                    <div style={{ fontSize: 10.5, color: V.inkMute, marginTop: 2,
+                      display: 'flex', alignItems: 'center', gap: 5 }}>
+                      {Icon.users(11, V.inkMute)}
+                      <span>{s.bookedByMe ? 'You’re booked' : (full ? 'Fully booked' : `${s.seatsLeft} seat${s.seatsLeft === 1 ? '' : 's'} left`)}</span>
+                      {s.location ? <><span style={{ width: 3, height: 3, background: V.inkMute, borderRadius: '50%' }} /> {s.location}</> : null}
+                    </div>
+                  </div>
+                  <button onClick={() => toggleBooking(s)} disabled={busyBook === s.id || full}
+                    className="m-tap" style={{
+                      flexShrink: 0, borderRadius: 100, padding: '9px 16px', fontSize: 13, fontWeight: 700,
+                      border: `1.5px solid ${s.bookedByMe ? V.rule : (full ? V.rule : V.accent)}`,
+                      background: s.bookedByMe ? V.surface : (full ? V.surface : V.accent),
+                      color: s.bookedByMe ? V.ink : (full ? V.inkMute : '#fffaf0'),
+                      cursor: (busyBook === s.id || full) ? 'default' : 'pointer',
+                      opacity: busyBook === s.id ? 0.6 : 1,
+                    }}>{s.bookedByMe ? 'Booked ✓' : (full ? 'Full' : 'Book')}</button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
