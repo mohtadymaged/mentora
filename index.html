@@ -223,6 +223,83 @@ window.MENTORA_SUPABASE = {
       return true;
     },
 
+    // ── Messages (Stage 5) ──────────────────────────────────
+    // Send a direct message to another member.
+    async sendMessage(recipientId, body) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const { data, error } = await sb.from("messages").insert({
+        sender_id: session.user.id, recipient_id: recipientId, body: body,
+      }).select().single();
+      if (error) throw error;
+      return data;
+    },
+
+    // Full thread (both directions) with one other member, oldest first.
+    async messagesWith(otherId) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const me = session.user.id;
+      const { data, error } = await sb.from("messages")
+        .select("*")
+        .or(`and(sender_id.eq.${me},recipient_id.eq.${otherId}),and(sender_id.eq.${otherId},recipient_id.eq.${me})`)
+        .order("created_at", { ascending: true });
+      if (error) { console.warn("[Mentora] messagesWith:", error.message); return []; }
+      return (data || []).map(function (msg) {
+        return { id: msg.id, from: msg.sender_id === me ? "me" : "them",
+                 text: msg.body, when: msg.created_at };
+      });
+    },
+
+    // Conversation list: everyone you've exchanged messages with + last line.
+    async conversations() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const me = session.user.id;
+      const { data, error } = await sb.from("messages")
+        .select("*").or(`sender_id.eq.${me},recipient_id.eq.${me}`)
+        .order("created_at", { ascending: false });
+      if (error) { console.warn("[Mentora] conversations:", error.message); return []; }
+      // Group by the other party; keep newest message per person.
+      const byOther = {};
+      (data || []).forEach(function (msg) {
+        const other = msg.sender_id === me ? msg.recipient_id : msg.sender_id;
+        if (!byOther[other]) byOther[other] = { otherId: other, last: msg, unread: 0 };
+        if (msg.recipient_id === me && !msg.read_at) byOther[other].unread++;
+      });
+      const list = Object.values(byOther);
+      if (!list.length) return [];
+      // Look up the other people's profiles for name/avatar.
+      const ids = list.map(c => c.otherId);
+      const { data: profs } = await sb.from("profiles")
+        .select("id, full_name, avatar_url, role").in("id", ids);
+      const pmap = {}; (profs || []).forEach(p => { pmap[p.id] = p; });
+      return list.map(function (c) {
+        const p = pmap[c.otherId] || {};
+        const av = p.avatar_url || "";
+        const isPhoto = av.startsWith("data:") || av.startsWith("http");
+        return {
+          otherId: c.otherId,
+          name: p.full_name || "Member",
+          photo: isPhoto ? av : null,
+          avatarEmoji: (!isPhoto && av) ? av : null,
+          role: p.role,
+          lastText: c.last.body,
+          lastWhen: c.last.created_at,
+          lastFromMe: c.last.sender_id === me,
+          unread: c.unread,
+        };
+      });
+    },
+
+    // Mark all messages from `otherId` to me as read.
+    async markRead(otherId) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return;
+      await sb.from("messages").update({ read_at: new Date().toISOString() })
+        .eq("recipient_id", session.user.id).eq("sender_id", otherId).is("read_at", null);
+    },
+
     // Courses created by the signed-in teacher.
     async myCourses() {
       const { data: { session } } = await sb.auth.getSession();
@@ -1928,6 +2005,13 @@ if (typeof document !== 'undefined' && !document.getElementById('m-wave-global-s
     45% { transform: rotate(16deg); }
     60% { transform: rotate(-4deg); }
     75% { transform: rotate(10deg); }
+  }
+  @keyframes m-chatswing {
+    0%,100% { transform: rotate(0deg) scale(1); }
+    20% { transform: rotate(-12deg) scale(1.12); }
+    40% { transform: rotate(10deg) scale(1.12); }
+    60% { transform: rotate(-7deg) scale(1.08); }
+    80% { transform: rotate(5deg) scale(1.04); }
   }`;
   document.head.appendChild(s);
 }
@@ -2088,6 +2172,9 @@ function TabBar({ V, active, onChange, os, messageBadge = 0, scrollRef, userPhot
   const rootRef = React.useRef(null);
   // compact = shrunk pill (icons only). Grows back when scrolling up / at rest.
   const [compact, setCompact] = React.useState(false);
+  // One-shot chat-icon wiggle: plays once on mount (when empty), and again on
+  // each tap of the Messages tab. Bumping the key remounts → re-fires the CSS.
+  const [chatWiggle, setChatWiggle] = React.useState(1);
 
   // Prefer an explicitly-passed scroll container (fullScreen layout, where the
   // scroller is a SIBLING). Fall back to walking up the ancestor chain (canvas
@@ -2155,7 +2242,7 @@ function TabBar({ V, active, onChange, os, messageBadge = 0, scrollRef, userPhot
         {tabs.map(t => {
           const isActive = active === t.id;
           return (
-            <button key={t.id} onClick={() => onChange(t.id)}
+            <button key={t.id} onClick={() => { if (t.id === 'messages') setChatWiggle(n => n + 1); onChange(t.id); }}
               className="m-tap"
               style={{
                 background: isActive ? V.accent : 'transparent',
@@ -2194,6 +2281,12 @@ function TabBar({ V, active, onChange, os, messageBadge = 0, scrollRef, userPhot
                   }}>
                     <img src={t.photo} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </span>
+                ) : t.id === 'messages' && (t.badge || 0) === 0 ? (
+                  <span key={chatWiggle} style={{
+                    display: 'inline-flex',
+                    animation: 'm-chatswing 1s ease-in-out 0.3s 1 both',
+                    transformOrigin: '50% 80%',
+                  }}>{t.icon(22, 'currentColor')}</span>
                 ) : t.icon(22, 'currentColor')}
                 {t.badge > 0 && (
                   <span style={{
@@ -2880,7 +2973,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
           liveCourses.length > 0 ? liveCourses.slice(0, 6).map(c => {
             const left = (c.seats || 0) - (c.enrolled || 0);
             return (
-              <button key={c.id} onClick={() => openMentor()} className="m-tap" style={{
+              <button key={c.id} onClick={() => openMentor(c.mentor_id)} className="m-tap" style={{
                 width: '100%', textAlign: 'left',
                 background: V.surface, border: `1px solid ${V.rule}`,
                 borderRadius: 18, padding: dense ? 12 : 14, overflow: 'hidden',
@@ -4023,7 +4116,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
             .map(c => {
               const left = (c.seats || 0) - (c.enrolled || 0);
               return (
-                <button key={c.id} onClick={() => openMentor && openMentor()} className="m-tap" style={{
+                <button key={c.id} onClick={() => openMentor && openMentor(c.mentor_id)} className="m-tap" style={{
                   width: '100%', textAlign: 'left',
                   background: V.surface, border: `1px solid ${V.rule}`,
                   borderRadius: 16, padding: dense ? 12 : 14,
@@ -4331,9 +4424,18 @@ function DividerRow({ V }) {
 // ─────────────────────────────────────────────────────────
 // MENTOR PROFILE
 // ─────────────────────────────────────────────────────────
-function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
+function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMessage }) {
   const m = mentor || MENTORS[0];
   const pad = dense ? 14 : 18;
+  const [faved, setFaved] = React.useState(false);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  // Live mentors (from the DB) lack demo-only fields like mutuals/yearsTeaching.
+  const isLive = !Array.isArray(m.mutuals);
+  const courseList = m.courses || [];
+  const liveStudents = courseList.reduce((s, c) => s + (c.students || c.enrolled || 0), 0);
+  const ratedCourses = courseList.filter(c => c.rating > 0);
+  const liveRating = ratedCourses.length
+    ? ratedCourses.reduce((s, c) => s + c.rating, 0) / ratedCourses.length : 0;
   return (
     <div className="m-fade" style={{ paddingBottom: 110, fontFamily: V.fontSans }}>
       {/* Top bar */}
@@ -4346,11 +4448,45 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
           border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: V.ink,
         }}>{Icon.back(18)}</button>
-        <button className="m-tap" style={{
+        <div style={{ position: 'relative' }}>
+        <button onClick={() => setMenuOpen(o => !o)} className="m-tap" style={{
           width: 36, height: 36, borderRadius: '50%', background: V.surface,
           border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: V.ink,
         }}>{Icon.more(18)}</button>
+        {menuOpen && (
+          <>
+            <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+            <div style={{
+              position: 'absolute', top: 42, right: 0, zIndex: 41,
+              background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 14,
+              boxShadow: '0 12px 32px rgba(20,16,12,0.18)', overflow: 'hidden',
+              minWidth: 168,
+            }}>
+              {[
+                { label: 'Share profile', icon: '🔗' },
+                { label: faved ? 'Remove favorite' : 'Add to favorites', icon: '❤️' },
+                { label: 'Report', icon: '🚩' },
+              ].map((it, i) => (
+                <button key={it.label} className="m-tap"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    if (it.label.includes('favorite')) setFaved(f => !f);
+                  }}
+                  style={{
+                    width: '100%', textAlign: 'left', background: 'transparent',
+                    border: 'none', borderTop: i ? `1px solid ${V.rule}` : 'none',
+                    padding: '12px 14px', fontSize: 13.5, color: V.ink,
+                    display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+                    fontFamily: V.fontSans,
+                  }}>
+                  <span>{it.icon}</span> {it.label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        </div>
       </div>
 
       {/* Big photo / hero */}
@@ -4379,7 +4515,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
           display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 5,
           color: V.inkSoft, fontSize: 13,
         }}>
-          <span>{m.craft}</span>
+          <span>{m.craft || (isLive ? 'Mentor' : '')}</span>
           <span style={{ width: 3, height: 3, background: V.inkMute, borderRadius: '50%' }} />
           <span>{m.city}</span>
         </div>
@@ -4389,7 +4525,8 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
           }}>"{m.accent}"</div>
         )}
 
-        {/* Mutuals badge */}
+        {/* Mutuals badge — demo only */}
+        {Array.isArray(m.mutuals) && m.mutuals.length > 0 && (
         <div style={{
           marginTop: dense ? 12 : 16, padding: '8px 14px',
           background: V.accentBg, borderRadius: 100,
@@ -4412,6 +4549,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
             <strong>{m.mutualCount} friends</strong> learn here
           </div>
         </div>
+        )}
       </div>
 
       {/* Stats row */}
@@ -4424,9 +4562,9 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
         {[
-          { v: m.rating.toFixed(1), l: 'Rating', icon: '★', color: V.ink },
-          { v: m.students, l: 'Students' },
-          { v: m.yearsTeaching + 'y', l: 'Teaching' },
+          { v: (isLive ? liveRating : m.rating) > 0 ? (isLive ? liveRating : m.rating).toFixed(1) : '—', l: 'Rating', icon: '★', color: V.ink },
+          { v: isLive ? liveStudents : m.students, l: 'Students' },
+          { v: isLive ? (courseList.length + (courseList.length === 1 ? ' class' : ' classes')) : (m.yearsTeaching + 'y'), l: isLive ? '' : 'Teaching' },
         ].map((s, i) => (
           <div key={i} style={{
             padding: dense ? '14px 8px' : '18px 8px', textAlign: 'center',
@@ -4448,7 +4586,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
       <div style={{
         display: 'flex', gap: 10, padding: `${dense ? 14 : 18}px ${pad}px 0`,
       }}>
-        <button className="m-tap" style={{
+        <button onClick={() => onMessage && onMessage(m.id)} className="m-tap" style={{
           flex: 1, background: V.surface, color: V.ink, border: `1px solid ${V.rule}`,
           borderRadius: 14, padding: '13px 0',
           fontSize: 14, fontWeight: 600,
@@ -4456,11 +4594,12 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
           backgroundImage: V.paper ? PAPER_NOISE : undefined,
           backgroundSize: V.paper ? '240px 240px' : undefined,
         }}>{Icon.message(16, V.ink)} Message</button>
-        <button className="m-tap" style={{
-          background: V.surface, color: V.ink, border: `1px solid ${V.rule}`,
+        <button onClick={() => setFaved(f => !f)} className="m-tap" style={{
+          background: faved ? V.accent : V.surface, color: faved ? '#fff' : V.ink,
+          border: `1px solid ${faved ? V.accent : V.rule}`,
           borderRadius: 14, padding: '13px 16px',
-          fontSize: 14, fontWeight: 600,
-        }}>{Icon.heart(17, V.accent, 'none')}</button>
+          fontSize: 14, fontWeight: 600, transition: 'background .2s ease, color .2s ease',
+        }}>{Icon.heart(17, faved ? '#fff' : V.accent, faved ? '#fff' : 'none')}</button>
       </div>
 
       {/* Bio */}
@@ -4479,11 +4618,18 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
 
       {/* Courses */}
       <div style={{ padding: `${dense ? 20 : 26}px ${pad}px 0` }}>
-        <SectionHead V={V} eyebrow="What she teaches" title="Her courses" dense={dense} />
+        <SectionHead V={V} eyebrow={isLive ? 'What they teach' : 'What she teaches'} title={isLive ? 'Classes' : 'Her courses'} dense={dense} />
+        {courseList.length === 0 ? (
+          <div style={{
+            background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 16,
+            padding: '24px 16px', textAlign: 'center', color: V.inkMute, fontSize: 13,
+          }}>No classes published yet.</div>
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 12 : 14 }}>
-          {m.courses.map(c => {
-            const remaining = (c.seats || 0) - c.students;
-            const pctFull = Math.round((c.students / (c.seats || 1)) * 100);
+          {courseList.map(c => {
+            const cStudents = c.students != null ? c.students : (c.enrolled || 0);
+            const remaining = (c.seats || 0) - cStudents;
+            const pctFull = Math.round((cStudents / (c.seats || 1)) * 100);
             const nearlyFull = remaining > 0 && remaining <= 5;
             const full = remaining <= 0;
             return (
@@ -4508,7 +4654,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
                     }}>{c.title}</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4,
                                   fontSize: 11.5, color: V.inkMute }}>
-                      <span><Stars rating={c.rating} size={11} color={V.ink}/> <span style={{ marginLeft: 2 }}>{c.rating}</span></span>
+                      <span><Stars rating={c.rating || 0} size={11} color={V.ink}/> <span style={{ marginLeft: 2 }}>{c.rating || 0}</span></span>
                       <span style={{ width: 3, height: 3, background: V.inkMute, borderRadius: '50%' }} />
                       <span>{c.lessons} lessons</span>
                     </div>
@@ -4614,7 +4760,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
                     marginBottom: 5,
                   }}>
                     <span style={{ fontSize: 11.5, color: V.inkSoft }}>
-                      <strong style={{ color: V.ink }}>{c.students}</strong>
+                      <strong style={{ color: V.ink }}>{cStudents}</strong>
                       <span style={{ color: V.inkMute }}> of {c.seats}</span> seats taken
                     </span>
                     <span className="m-serif" style={{
@@ -4660,18 +4806,30 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
             );
           })}
         </div>
+        )}
       </div>
 
       {/* Reviews preview */}
       <div style={{ padding: `${dense ? 22 : 28}px ${pad}px 0` }}>
-        <SectionHead V={V} eyebrow="What learners say" title={`${m.rating.toFixed(1)}★ from ${m.reviewCount} reviews`} dense={dense}
+        <SectionHead V={V} eyebrow="What learners say" title={isLive ? ((liveRating>0?liveRating.toFixed(1)+'★ reviews':'Reviews')) : `${m.rating.toFixed(1)}★ from ${m.reviewCount} reviews`} dense={dense}
           action={
-            <button onClick={openReviews} className="m-tap" style={{
+            <button onClick={() => openReviews()} className="m-tap" style={{
               background: 'transparent', border: 'none', color: V.ink,
               fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 3,
             }}>See all {Icon.arrow(13)}</button>
           } />
-        <div className="m-tap" onClick={openReviews} style={{
+        {isLive ? (
+          <div className="m-tap" onClick={() => openReviews()} style={{
+            background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16,
+            padding: dense ? 16 : 18, textAlign: 'center', color: V.inkSoft, fontSize: 13,
+          }}>
+            <div style={{ fontSize: 24, marginBottom: 6 }}>⭐</div>
+            {liveRating > 0
+              ? <span>Tap to read what members say about these classes.</span>
+              : <span>No reviews yet — enrolled members can be the first to rate.</span>}
+          </div>
+        ) : (
+        <div className="m-tap" onClick={() => openReviews()} style={{
           background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16,
           padding: dense ? 14 : 16,
         }}>
@@ -4692,6 +4850,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking }) {
             fontStyle: 'italic',
           }}>"Layla makes complex techniques feel approachable. Feels like learning from a friend."</p>
         </div>
+        )}
       </div>
     </div>
   );
@@ -7446,6 +7605,37 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
   const isTeacher = role === 'teacher';
   const [filter, setFilter] = useState('all');
   const [composeOpen, setComposeOpen] = useState(false);
+  // ── Live conversations (Stage 5) ──
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const [convos, setConvos] = React.useState(null);
+  const [prefs, setPrefs] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem('mentora_chat_prefs') || '{}'); } catch (e) { return {}; }
+  });
+  const savePrefs = (next) => {
+    setPrefs(next);
+    try { localStorage.setItem('mentora_chat_prefs', JSON.stringify(next)); } catch (e) {}
+  };
+  const [menuFor, setMenuFor] = React.useState(null); // otherId whose long-press menu is open
+  React.useEffect(() => {
+    if (!DB) return;
+    DB.conversations().then(setConvos).catch(() => setConvos([]));
+  }, []);
+  const prefOf = (id) => prefs[id] || {};
+  const setPrefFor = (id, patch) => savePrefs({ ...prefs, [id]: { ...prefOf(id), ...patch } });
+
+  const fmtWhen = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso), now = new Date();
+    const mins = Math.floor((now - d) / 60000);
+    if (mins < 1) return 'now';
+    if (mins < 60) return mins + 'm';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h';
+    const days = Math.floor(hrs / 24);
+    if (days < 7) return days + 'd';
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+
   const filters = [
     { id: 'all',    label: 'All' },
     { id: 'direct', label: isTeacher ? 'Students' : 'Mentors' },
@@ -7578,6 +7768,125 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
       </div>
 
       {/* Threads */}
+      {DB && Array.isArray(convos) ? (
+        <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {convos.length === 0 && (
+            <div style={{
+              textAlign: 'center', padding: '40px 16px', color: V.inkMute, fontSize: 13,
+            }}>
+              <div style={{ fontSize: 30, marginBottom: 8 }}>💬</div>
+              No conversations yet.<br/>Tap + to message a mentor.
+            </div>
+          )}
+          {convos
+            .filter(c => !prefOf(c.otherId).deleted)
+            .slice()
+            .sort((a, b) => {
+              const pa = prefOf(a.otherId).pinned ? 1 : 0;
+              const pb = prefOf(b.otherId).pinned ? 1 : 0;
+              if (pa !== pb) return pb - pa;
+              return new Date(b.lastWhen) - new Date(a.lastWhen);
+            })
+            .map(c => {
+              const pr = prefOf(c.otherId);
+              const startHold = () => {
+                c._t = setTimeout(() => setMenuFor(c.otherId), 480);
+              };
+              const cancelHold = () => { if (c._t) clearTimeout(c._t); };
+              return (
+                <div key={c.otherId} style={{ position: 'relative' }}>
+                  <button
+                    onClick={() => { if (menuFor) { setMenuFor(null); return; } onOpenConversation && onOpenConversation(c); }}
+                    onPointerDown={startHold} onPointerUp={cancelHold}
+                    onPointerLeave={cancelHold}
+                    onContextMenu={(e) => { e.preventDefault(); setMenuFor(c.otherId); }}
+                    className="m-tap" style={{
+                      width: '100%', textAlign: 'left',
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      background: pr.pinned ? V.accentBg : V.surface,
+                      border: `1px solid ${pr.pinned ? V.accentSoft : V.rule}`,
+                      borderRadius: 16, padding: dense ? 11 : 13,
+                    }}>
+                    {c.photo ? (
+                      <img src={c.photo} alt="" style={{
+                        width: 46, height: 46, borderRadius: '50%', objectFit: 'cover', flexShrink: 0,
+                        border: `2px solid ${V.surface}`,
+                      }} />
+                    ) : (
+                      <div style={{
+                        width: 46, height: 46, borderRadius: '50%', flexShrink: 0,
+                        background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: c.avatarEmoji ? 24 : 18, fontWeight: 700, color: V.ink,
+                        border: `2px solid ${V.surface}`,
+                      }}>{c.avatarEmoji || (c.name || 'M')[0]}</div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                        <div className="m-serif" style={{
+                          fontSize: 15, color: V.ink, lineHeight: 1.15, flex: 1,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          fontWeight: V.polaroid ? 500 : 400,
+                          display: 'flex', alignItems: 'center', gap: 5,
+                        }}>
+                          {pr.pinned && <span style={{ fontSize: 11 }}>📌</span>}
+                          {c.name}
+                          {pr.muted && <span style={{ fontSize: 11, opacity: 0.6 }}>🔕</span>}
+                        </div>
+                        <div style={{ fontSize: 10.5, color: V.inkMute, flexShrink: 0 }}>{fmtWhen(c.lastWhen)}</div>
+                      </div>
+                      <div style={{
+                        fontSize: 12.5, color: (c.unread && !pr.muted) ? V.ink : V.inkMute, marginTop: 3,
+                        fontWeight: (c.unread && !pr.muted) ? 600 : 400,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>{c.lastFromMe ? 'You: ' : ''}{c.lastText}</div>
+                    </div>
+                    {c.unread > 0 && !pr.muted && (
+                      <span style={{
+                        minWidth: 20, height: 20, padding: '0 6px', borderRadius: 100,
+                        background: V.accent, color: '#fff', fontSize: 11, fontWeight: 700,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                      }}>{c.unread}</span>
+                    )}
+                  </button>
+
+                  {/* Long-press action menu */}
+                  {menuFor === c.otherId && (
+                    <>
+                      <div onClick={() => setMenuFor(null)} style={{ position: 'fixed', inset: 0, zIndex: 50 }} />
+                      <div className="m-fade" style={{
+                        position: 'absolute', right: 10, top: '70%', zIndex: 51,
+                        background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 14,
+                        boxShadow: '0 12px 32px rgba(20,16,12,0.22)', overflow: 'hidden', minWidth: 180,
+                      }}>
+                        {[
+                          { key: 'pin', label: pr.pinned ? 'Unpin chat' : 'Pin chat', icon: '📌',
+                            act: () => setPrefFor(c.otherId, { pinned: !pr.pinned }) },
+                          { key: 'mute', label: pr.muted ? 'Unmute chat' : 'Mute chat', icon: pr.muted ? '🔔' : '🔕',
+                            act: () => setPrefFor(c.otherId, { muted: !pr.muted }) },
+                          { key: 'del', label: 'Delete chat', icon: '🗑️', danger: true,
+                            act: () => setPrefFor(c.otherId, { deleted: true }) },
+                        ].map((it, i) => (
+                          <button key={it.key} className="m-tap"
+                            onClick={() => { it.act(); setMenuFor(null); }}
+                            style={{
+                              width: '100%', textAlign: 'left', background: 'transparent',
+                              border: 'none', borderTop: i ? `1px solid ${V.rule}` : 'none',
+                              padding: '13px 16px', fontSize: 13.5,
+                              color: it.danger ? '#c0392b' : V.ink,
+                              display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+                              fontFamily: V.fontSans,
+                            }}>
+                            <span>{it.icon}</span> {it.label}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+      ) : (
       <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 8 }}>
         {threads.map(t => {
           const photo = threadPhoto(t);
@@ -7643,6 +7952,7 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
           );
         })}
       </div>
+      )}
     </div>
   );
 }
@@ -7650,34 +7960,68 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
 // ─────────────────────────────────────────────────────────
 // CHAT THREAD — conversation view
 // ─────────────────────────────────────────────────────────
-function ChatThreadScreen({ V, dense, role, threadId, newMentorId, goBack }) {
+function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj, liveOther, goBack }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   // "new" thread → synthesize a fresh empty conversation with the chosen mentor.
-  const newMentor = MENTORS.find(x => x.id === newMentorId);
+  // Prefer a live (DB) mentor object passed from the app; fall back to demo list.
+  const newMentor = newMentorObj || MENTORS.find(x => x.id === newMentorId);
   const t = threadId === 'new' && newMentor ? {
     id: 'new', type: 'direct',
     learnerName: newMentor.name, learnerPhoto: newMentor.photo, learnerSub: newMentor.craft,
     teacherName: newMentor.name, teacherPhoto: newMentor.photo, teacherSub: newMentor.craft,
+    _avatarEmoji: newMentor.avatarEmoji || (newMentor.useAvatar ? newMentor.avatar : null),
     messages: [],
   } : (CHAT_THREADS.find(x => x.id === threadId) || CHAT_THREADS[0]);
   const isGroup = t.type === 'group';
   const name = isGroup ? t.title : (isTeacher ? t.teacherName : t.learnerName);
   const sub = isGroup ? t.subtitle : (isTeacher ? t.teacherSub : t.learnerSub);
   const photo = isGroup ? null : (() => {
+    if (t._avatarEmoji) return null;            // live mentor with emoji avatar
+    if (t.id === 'new' && newMentor) return newMentor.photo || null;
     const m = MENTORS.find(x => x.name === name || x.short === (name||'').split(' ')[0]);
     if (m && m.useAvatar) return null;
     return isTeacher ? t.teacherPhoto : t.learnerPhoto;
   })();
   const headerAvatar = isGroup ? null
-    : (() => { const m = MENTORS.find(x => x.name === name || x.short === (name||'').split(' ')[0]); return (m && m.avatar) || '🙂'; })();
+    : (() => {
+        if (liveOther) return liveOther.avatarEmoji || null;
+        if (t._avatarEmoji) return t._avatarEmoji;
+        const m = MENTORS.find(x => x.name === name || x.short === (name||'').split(' ')[0]);
+        return (m && m.avatar) || '🙂';
+      })();
+  // Live conversation overrides for the header identity.
+  const dispName = liveOther ? liveOther.name : name;
+  const dispPhoto = liveOther ? (liveOther.photo || null) : photo;
 
   const [msgs, setMsgs] = useState(t.messages);
   const [draft, setDraft] = useState('');
+  // Live messaging target: a live conversation's other party, or a live mentor
+  // chosen via "Message". Falls back to demo behaviour when absent.
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const liveTargetId = (liveOther && liveOther.otherId) || (newMentorObj && newMentorObj.id) || null;
+  const isLiveChat = !!(DB && liveTargetId);
+  React.useEffect(() => {
+    if (!isLiveChat) return;
+    let alive = true;
+    const load = () => DB.messagesWith(liveTargetId).then(rows => { if (alive) setMsgs(rows); }).catch(() => {});
+    load();
+    DB.markRead(liveTargetId).catch(() => {});
+    const iv = setInterval(load, 4000); // light polling for new replies
+    return () => { alive = false; clearInterval(iv); };
+  }, [isLiveChat, liveTargetId]);
   const send = () => {
     if (!draft.trim()) return;
-    setMsgs(m => [...m, { from: 'me', text: draft.trim(), when: 'now' }]);
+    const text = draft.trim();
     setDraft('');
+    if (isLiveChat) {
+      setMsgs(m => [...m, { id: 'tmp' + Date.now(), from: 'me', text, when: new Date().toISOString() }]);
+      DB.sendMessage(liveTargetId, text)
+        .then(() => DB.messagesWith(liveTargetId).then(setMsgs))
+        .catch(() => {});
+    } else {
+      setMsgs(m => [...m, { from: 'me', text, when: 'now' }]);
+    }
   };
 
   return (
@@ -7699,8 +8043,8 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, goBack }) {
           border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: V.ink, flexShrink: 0,
         }}>{Icon.back(17)}</button>
-        {photo ? (
-          <img src={photo} alt="" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+        {dispPhoto ? (
+          <img src={dispPhoto} alt="" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
         ) : headerAvatar ? (
           <div style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
             background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -7710,13 +8054,13 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, goBack }) {
             width: 38, height: 38, borderRadius: 11, flexShrink: 0,
             background: V.accentBg, color: V.ink,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>{Icon.users(18, V.ink)}</div>
+          }}>{dispName ? dispName[0] : Icon.users(18, V.ink)}</div>
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="m-serif" style={{ fontSize: 15.5, color: V.ink, lineHeight: 1.1,
                                             fontWeight: V.polaroid ? 500 : 400,
                                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {name}
+            {dispName}
           </div>
           <div style={{ fontSize: 10.5, color: V.ink, marginTop: 1,
                         display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -7886,6 +8230,28 @@ function MentoraApp({ variant, os, density, scope,
   };
   const [activeThreadId, setActiveThreadId] = useState('t1');
   const [newChatMentorId, setNewChatMentorId] = useState(null);
+  const [activeOther, setActiveOther] = useState(null);
+  // Live unread message count for the bottom-nav badge.
+  const [unreadCount, setUnreadCount] = useState(0);
+  const refreshUnread = React.useCallback(() => {
+    if (!DB) { setUnreadCount(0); return; }
+    DB.conversations()
+      .then(list => {
+        let prefs = {};
+        try { prefs = JSON.parse(localStorage.getItem('mentora_chat_prefs') || '{}'); } catch (e) {}
+        const total = (list || []).reduce((sum, c) => {
+          const p = prefs[c.otherId] || {};
+          if (p.muted || p.deleted) return sum;
+          return sum + (c.unread || 0);
+        }, 0);
+        setUnreadCount(total);
+      })
+      .catch(() => setUnreadCount(0));
+  }, [DB]);
+  // Keep the nav unread badge in sync: on first load and whenever we leave
+  // the messages/chat surfaces (so reading a thread clears the count).
+  React.useEffect(() => { refreshUnread(); }, [refreshUnread, screen]);
+  const openConversation = (convo) => { setActiveOther(convo); setNewChatMentorId(null); setActiveThreadId('conv'); setScreen('chat'); };
   const [returnTab, setReturnTab] = useState('home');
   const [profile, setProfile] = useState(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -7982,7 +8348,7 @@ function MentoraApp({ variant, os, density, scope,
   const openNotifications = () => { setReturnTab(['home','courses','explore','settings'].includes(screen) ? screen : 'home'); setScreen('notifications'); };
   const openMessages = () => { setReturnTab(['home','courses','explore','settings'].includes(screen) ? screen : 'home'); setScreen('messages'); };
   const openChat = (threadId) => { if (threadId) setActiveThreadId(threadId); setScreen('chat'); };
-  const openNewChat = (mentorId) => { setNewChatMentorId(mentorId); setActiveThreadId('new'); setScreen('chat'); };
+  const openNewChat = (mentorId) => { setActiveOther(null); setNewChatMentorId(mentorId); setActiveThreadId('new'); setScreen('chat'); };
   const goBack = () => {
     if (screen === 'reviews')  return setScreen('mentor');
     if (screen === 'booking')  return setScreen('mentor');
@@ -8089,6 +8455,7 @@ function MentoraApp({ variant, os, density, scope,
           <MentorScreen V={V} dense={dense} mentor={mentor}
                         goBack={goBack}
                         openReviews={openReviews}
+                        onMessage={openNewChat}
                         openBooking={openBooking} />
         )}
         {screen === 'reviews' && (
@@ -8132,16 +8499,20 @@ function MentoraApp({ variant, os, density, scope,
         )}
         {screen === 'messages' && (
           <ChatListScreen V={V} dense={dense} role={role}
-                          goBack={goBack} openChat={openChat} onNewChat={openNewChat} />
+                          goBack={goBack} openChat={openChat} onNewChat={openNewChat}
+                          onOpenConversation={openConversation} />
         )}
         {screen === 'chat' && (
           <ChatThreadScreen V={V} dense={dense} role={role}
-                            threadId={activeThreadId} newMentorId={newChatMentorId} goBack={goBack} />
+                            threadId={activeThreadId} newMentorId={newChatMentorId}
+                            liveOther={activeOther}
+                            newMentorObj={(liveMentors || []).find(x => x.id === newChatMentorId) || null}
+                            goBack={goBack} />
         )}
       </PaperBg>
       </div>
       {!hideTabBar && (
-        <TabBar V={V} active={activeTab} onChange={onTabChange} os={os} messageBadge={3} scrollRef={scrollRef} userPhoto={tabUserPhoto} userAvatar={tabUserAvatar} />
+        <TabBar V={V} active={activeTab} onChange={onTabChange} os={os} messageBadge={DB ? unreadCount : 0} scrollRef={scrollRef} userPhoto={tabUserPhoto} userAvatar={tabUserAvatar} />
       )}
     </div>
   );
