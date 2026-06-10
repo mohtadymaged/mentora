@@ -150,7 +150,35 @@ window.MENTORA_SUPABASE = {
       });
     },
 
-    // One mentor's published courses (for their profile page).
+    // Full community directory for the "New message" sheet: every OTHER
+    // member (any role), excluding yourself. Mentors first, then by name.
+    async members() {
+      const { data: { session } } = await sb.auth.getSession();
+      const me = session ? session.user.id : null;
+      const { data, error } = await sb.from("profiles")
+        .select("id, full_name, role, avatar_url, zone, residency")
+        .order("role", { ascending: true })
+        .order("full_name", { ascending: true });
+      if (error) { console.warn("[Mentora] members:", error.message); return []; }
+      return (data || [])
+        .filter(function (p) { return p.id !== me; })
+        .map(function (p) {
+          var av = p.avatar_url || "";
+          var isPhoto = av.startsWith("data:") || av.startsWith("http");
+          var first = (p.full_name || "Member").split(" ")[0];
+          return {
+            id: p.id,
+            name: p.full_name || "Member",
+            short: first,
+            initial: (first[0] || "M").toUpperCase(),
+            photo: isPhoto ? av : null,
+            avatarEmoji: (!isPhoto && av) ? av : null,
+            craft: p.role === "mentor" ? "Mentor" : "Neighbour",
+            city: p.zone ? ("Zone " + p.zone) : "El Gouna",
+          };
+        });
+    },
+
     async mentorCourses(mentorId) {
       const { data, error } = await sb.from("courses")
         .select("*").eq("mentor_id", mentorId).eq("published", true)
@@ -298,6 +326,31 @@ window.MENTORA_SUPABASE = {
       if (!session) return;
       await sb.from("messages").update({ read_at: new Date().toISOString() })
         .eq("recipient_id", session.user.id).eq("sender_id", otherId).is("read_at", null);
+    },
+
+    // Reviews received across all the signed-in teacher's classes (real).
+    async myReceivedReviews() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const me = session.user.id;
+      const { data, error } = await sb.from("reviews")
+        .select("id, rating, body, created_at, profiles(full_name, avatar_url), courses!inner(title, mentor_id)")
+        .eq("courses.mentor_id", me)
+        .order("created_at", { ascending: false });
+      if (error) { console.warn("[Mentora] myReceivedReviews:", error.message); return []; }
+      return (data || []).map(function (r) {
+        var p = r.profiles || {}; var c = r.courses || {};
+        var first = (p.full_name || "Member").split(" ")[0];
+        var av = p.avatar_url || "";
+        var isPhoto = av.startsWith("data:") || av.startsWith("http");
+        return {
+          id: r.id, rating: r.rating, text: r.body || "",
+          author: p.full_name || "Member",
+          avatar: (!isPhoto && av) ? av : (first[0] || "M").toUpperCase(),
+          photo: isPhoto ? av : null,
+          course: c.title || "", when: r.created_at,
+        };
+      });
     },
 
     // Courses created by the signed-in teacher.
@@ -1843,6 +1896,9 @@ const Icon = {
   message: (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a8 8 0 11-3.5-6.6L21 4l-1.3 3.4A8 8 0 0121 12z"/></svg>,
   chat:    (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 15a2 2 0 01-2 2H8l-4 4V6a2 2 0 012-2h12a2 2 0 012 2z"/><path d="M8 9.5h8M8 13h5"/></svg>,
   chatBubble: (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M7.5 18.5 4 21v-4.2A7.5 7.5 0 1 1 8 19.3"/><circle cx="9" cy="11" r="1" fill={c} stroke="none"/><circle cx="12.5" cy="11" r="1" fill={c} stroke="none"/><circle cx="16" cy="11" r="1" fill={c} stroke="none"/></svg>,
+  paperPlane: (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2.5 10.8 13.2"/><path d="M21.5 2.5 14.8 21.5l-4-8.3-8.3-4 19.5-6.7z"/></svg>,
+  mic: (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21M8.5 21h7"/></svg>,
+  camera: (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2L8 4.8A1 1 0 0 1 8.85 4.3h6.3A1 1 0 0 1 16 4.8L17.5 7h2A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.4"/></svg>,
   calendar:(s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>,
   arrow:   (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>,
   check:   (s=20, c='currentColor') => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 12 10 18 20 6"/></svg>,
@@ -2012,6 +2068,15 @@ if (typeof document !== 'undefined' && !document.getElementById('m-wave-global-s
     40% { transform: rotate(10deg) scale(1.12); }
     60% { transform: rotate(-7deg) scale(1.08); }
     80% { transform: rotate(5deg) scale(1.04); }
+  }
+  @keyframes m-recpulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.82); }
+  }
+  @keyframes m-followpop {
+    0% { transform: scale(0.6); opacity: 0; }
+    60% { transform: scale(1.12); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
   }`;
   document.head.appendChild(s);
 }
@@ -2108,28 +2173,15 @@ function VariantBackdrop({ V, accentArc = false, children, style = {} }) {
   );
 }
 
-// Polaroid (Atelier) / clean rounded photo (Hearth)
+// Profile photo — always circular (matches the emoji-avatar circles).
 function MentorPhoto({ V, src, alt, size = 64, rotation = -2, frame = true }) {
-  if (V.polaroid && frame) {
-    return (
-      <div style={{
-        background: '#fffaf0', padding: 6, paddingBottom: size > 100 ? 18 : 10,
-        boxShadow: '0 6px 18px rgba(60,40,20,0.18), 0 1px 0 rgba(0,0,0,0.04)',
-        transform: `rotate(${rotation}deg)`,
-        display: 'inline-block',
-      }}>
-        <img src={src} alt={alt} style={{
-          display: 'block', width: size, height: size, objectFit: 'cover',
-          background: '#eee',
-        }} />
-      </div>
-    );
-  }
   return (
     <img src={src} alt={alt} style={{
       width: size, height: size, objectFit: 'cover',
-      borderRadius: V.polaroid ? 4 : 14,
-      boxShadow: '0 4px 14px rgba(60,30,20,0.15)',
+      borderRadius: '50%',
+      background: '#eee',
+      border: `${size > 100 ? 4 : 2}px solid #fffaf0`,
+      boxShadow: '0 6px 18px rgba(60,40,20,0.18)',
       display: 'block',
     }} />
   );
@@ -2166,7 +2218,7 @@ function TabBar({ V, active, onChange, os, messageBadge = 0, scrollRef, userPhot
     { id: 'home',     label: 'Home',     icon: Icon.home },
     { id: 'courses',  label: 'Courses',  icon: Icon.book },
     { id: 'explore',  label: 'Explore',  icon: Icon.compass },
-    { id: 'messages', label: 'Messages', icon: Icon.chatBubble,  badge: messageBadge },
+    { id: 'messages', label: 'Messages', icon: Icon.paperPlane,  badge: messageBadge },
     { id: 'profile',  label: 'Profile',  photo: userPhoto, avatar: userAvatar },
   ];
   const rootRef = React.useRef(null);
@@ -3090,29 +3142,57 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
   };
   const pad = dense ? 14 : 18;
 
-  // Calendar — May 2026
-  const MONTH = 'May';
-  const YEAR = 2026;
-  const DAYS_IN_MONTH = 31;
-  const FIRST_WEEKDAY = 5; // Friday
-  const TODAY = 19;
+  // Calendar — real current month. (No sessions backend yet → no fake bookings.)
+  const _now = new Date();
+  const _mIdx = _now.getMonth();
+  const MONTH = _now.toLocaleString('en-US', { month: 'long' });
+  const YEAR = _now.getFullYear();
+  const DAYS_IN_MONTH = new Date(YEAR, _mIdx + 1, 0).getDate();
+  const FIRST_WEEKDAY = new Date(YEAR, _mIdx, 1).getDay();
+  const TODAY = _now.getDate();
   const dayNames = ['S','M','T','W','T','F','S'];
+  // Real bookings keyed by day-of-month. Empty until a sessions backend exists.
+  const BOOKINGS = {};
 
-  const [selectedDay, setSelectedDay] = useState(20);
+  const [selectedDay, setSelectedDay] = useState(TODAY);
+  // Real reviews received across this teacher's classes (deployed build).
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const [liveReviews, setLiveReviews] = React.useState(null);
+  React.useEffect(() => {
+    if (!DB || !DB.myReceivedReviews) return;
+    DB.myReceivedReviews().then(r => setLiveReviews(r || [])).catch(() => setLiveReviews([]));
+  }, []);
+  // Review source: real on the deployed build, demo on the canvas. Rating shown
+  // in the stats is the real average of those reviews (— when there are none).
+  const reviewsSrc = DB ? (liveReviews || []) : (typeof REVIEWS_FOR_LAYLA !== 'undefined' ? REVIEWS_FOR_LAYLA : []);
+  const reviewsLoading = DB && liveReviews === null;
+  const reviewAvg = reviewsSrc.length
+    ? reviewsSrc.reduce((s, r) => s + (r.rating || 0), 0) / reviewsSrc.length : 0;
+  const fmtReviewWhen = (w) => {
+    if (!w) return '';
+    if (/^\d{4}-\d{2}-\d{2}T/.test(w)) {
+      const d = new Date(w);
+      if (!isNaN(d)) return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    return w;
+  };
+  // Entrance gate for the animated stat cards (count-up + stagger).
+  const [statsIn, setStatsIn] = React.useState(false);
+  React.useEffect(() => { const t = setTimeout(() => setStatsIn(true), 120); return () => clearTimeout(t); }, []);
 
   const cells = [];
   for (let i = 0; i < FIRST_WEEKDAY; i++) cells.push({ kind: 'empty' });
   for (let d = 1; d <= DAYS_IN_MONTH; d++) {
     const isPast = d < TODAY;
     const isToday = d === TODAY;
-    const bookings = TEACHER_BOOKINGS[d];
+    const bookings = BOOKINGS[d];
     let kind = 'none';
     if (bookings) kind = 'booked';
     if (isPast) kind = 'past';
     cells.push({ kind, day: d, isToday, count: bookings ? bookings.length : 0 });
   }
 
-  const totalUpcomingBookings = Object.entries(TEACHER_BOOKINGS)
+  const totalUpcomingBookings = Object.entries(BOOKINGS)
     .filter(([d]) => +d >= TODAY)
     .reduce((sum, [_, list]) => sum + list.length, 0);
 
@@ -3126,7 +3206,7 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
     : me.courses;
   const totalEnrolled = teachCourses.reduce((s, c) => s + (c.students || 0), 0);
 
-  const selectedBookings = TEACHER_BOOKINGS[selectedDay] || [];
+  const selectedBookings = BOOKINGS[selectedDay] || [];
 
   return (
     <div className="m-fade" style={{ paddingBottom: 116, padding: `4px ${pad}px 116px`,
@@ -3190,35 +3270,27 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
         </div>
       </div>
 
-      {/* Top stats — students total, courses, rating */}
-      <div style={{
-        display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
-        marginBottom: dense ? 20 : 26,
-        background: V.surface, border: `1px solid ${V.rule}`,
-        borderRadius: 18,
-        backgroundImage: V.paper ? PAPER_NOISE : undefined,
-        backgroundSize: V.paper ? '240px 240px' : undefined,
-      }}>
-        {[
-          { v: totalEnrolled,             l: 'Students' },
-          { v: me.courses.length,         l: 'Courses' },
-          { v: me.rating.toFixed(1) + '★', l: 'Rating', color: V.ink },
-        ].map((s, i) => (
-          <div key={i} style={{
-            padding: dense ? '14px 8px' : '18px 8px', textAlign: 'center',
-            borderLeft: i === 0 ? 'none' : `1px dashed ${V.rule}`,
+      {/* Top stats — students total, courses, rating (animated cards) */}
+      {(() => {
+        const cards = [
+          { key: 'rating', val: reviewAvg || 0, dec: 1, label: 'Rating', tint: '#E8A23D',
+            icon: (c) => <svg width="17" height="17" viewBox="0 0 24 24" fill={c}><path d="M12 2l3 6.5 7 .8-5.2 4.7 1.5 6.9L12 17.8 5.7 20.9l1.5-6.9L2 9.3l7-.8L12 2z"/></svg> },
+          { key: 'students', val: totalEnrolled, dec: 0, label: totalEnrolled === 1 ? 'Student' : 'Students', tint: '#3E9C7A',
+            icon: (c) => Icon.users(17, c) },
+          { key: 'courses', val: teachCourses.length, dec: 0, label: teachCourses.length === 1 ? 'Course' : 'Courses', tint: V.accent,
+            icon: (c) => Icon.book(17, c) },
+        ];
+        return (
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10,
+            marginBottom: dense ? 20 : 26,
           }}>
-            <div className="m-serif" style={{
-              fontSize: dense ? 22 : 26, color: s.color || V.ink, lineHeight: 1,
-              fontWeight: V.polaroid ? 500 : 400,
-            }}>{s.v}</div>
-            <div style={{ fontSize: 10.5, color: V.inkMute, marginTop: 4,
-                          textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
-              {s.l}
-            </div>
+            {cards.map((s, i) => (
+              <StatCard key={s.key} V={V} dense={dense} card={s} index={i} active={statsIn} />
+            ))}
           </div>
-        ))}
-      </div>
+        );
+      })()}
 
       {/* COURSES I'M TEACHING */}
       <SectionHead V={V} eyebrow="What I teach" title="My courses" dense={dense}
@@ -3396,10 +3468,13 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
           {MONTH} {selectedDay} · {selectedBookings.length} session{selectedBookings.length === 1 ? '' : 's'}
         </div>
         {selectedBookings.length === 0 ? (
-          <div className="m-hand" style={{
-            textAlign: 'center', padding: '20px 16px', color: V.inkMute, fontSize: 16,
+          <div style={{
+            textAlign: 'center', padding: '22px 16px', color: V.inkMute, fontSize: 13,
             background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 14,
-          }}>— a quiet day —</div>
+          }}>
+            <div style={{ fontSize: 22, marginBottom: 6 }}>🗓️</div>
+            No upcoming events.
+          </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {selectedBookings.map((b, i) => (
@@ -3438,17 +3513,36 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
         )}
       </div>
 
-      {/* REVIEWS RECEIVED */}
-      <SectionHead V={V} eyebrow={`${me.reviewCount} reviews · ${me.rating.toFixed(1)}★`}
+      {/* REVIEWS RECEIVED — real, with empty state */}
+      <SectionHead V={V}
+                   eyebrow={reviewsSrc.length ? `${reviewsSrc.length} review${reviewsSrc.length === 1 ? '' : 's'} · ${reviewAvg.toFixed(1)}★` : 'Member feedback'}
                    title="What learners say" dense={dense}
-        action={
+        action={reviewsSrc.length ? (
           <button onClick={openReviews} className="m-tap" style={{
             background: 'transparent', border: 'none', color: V.accent,
             fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 3,
           }}>See all {Icon.arrow(13)}</button>
-        } />
+        ) : null} />
+      {reviewsLoading ? (
+        <div style={{
+          textAlign: 'center', padding: '24px 16px', color: V.inkMute, fontSize: 13,
+          background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16,
+        }}>Loading reviews…</div>
+      ) : reviewsSrc.length === 0 ? (
+        <div style={{
+          textAlign: 'center', padding: '30px 22px', color: V.inkMute, fontSize: 13,
+          background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 16,
+          lineHeight: 1.55,
+        }}>
+          <div style={{ fontSize: 26, marginBottom: 8 }}>⭐</div>
+          <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>
+            No reviews yet
+          </div>
+          Once members rate your classes, their words will appear here.
+        </div>
+      ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
-        {REVIEWS_FOR_LAYLA.slice(0, 3).map(r => (
+        {reviewsSrc.slice(0, 3).map(r => (
           <div key={r.id} style={{
             background: V.surface, border: `1px solid ${V.rule}`,
             borderRadius: 16, padding: dense ? 14 : 16,
@@ -3456,39 +3550,41 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
             backgroundSize: V.paper ? '240px 240px' : undefined,
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: '50%', background: V.accentBg,
-                color: V.ink, fontWeight: 700, fontSize: 13,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>{r.avatar}</div>
+              {r.photo ? (
+                <img src={r.photo} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover' }} />
+              ) : (
+                <div style={{
+                  width: 34, height: 34, borderRadius: '50%', background: V.accentBg,
+                  color: V.ink, fontWeight: 700, fontSize: 13,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>{r.avatar}</div>
+              )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="m-serif" style={{ fontSize: 13.5, color: V.ink, lineHeight: 1.1 }}>
                   {r.author}
                 </div>
                 <div style={{ fontSize: 10.5, color: V.inkMute, marginTop: 2 }}>
-                  on <em className="m-serif" style={{ fontStyle: 'italic' }}>{r.course}</em> · {r.when}
+                  on <em className="m-serif" style={{ fontStyle: 'italic' }}>{r.course}</em>{r.when ? ` · ${fmtReviewWhen(r.when)}` : ''}
                 </div>
               </div>
               <Stars rating={r.rating} size={12} color={V.accent} />
             </div>
-            <p className="m-serif" style={{
-              fontSize: 13, lineHeight: 1.55, color: V.ink, margin: 0,
-              fontStyle: 'italic',
-            }}>"{r.text}"</p>
-            <button className="m-tap" style={{
-              marginTop: 10, background: 'transparent', border: 'none',
-              color: V.accent, fontSize: 11.5, fontWeight: 600,
-              display: 'flex', alignItems: 'center', gap: 5, padding: 0,
-            }}>
-              {Icon.message(12, V.ink)} Reply
-            </button>
+            {r.text && (
+              <p className="m-serif" style={{
+                fontSize: 13, lineHeight: 1.55, color: V.ink, margin: 0,
+                fontStyle: 'italic',
+              }}>"{r.text}"</p>
+            )}
           </div>
         ))}
       </div>
+      )}
 
-      <div className="m-hand" style={{
-        textAlign: 'center', marginTop: 26, color: V.inkMute, fontSize: 17,
-      }}>— thank you for showing up —</div>
+      {reviewsSrc.length > 0 && (
+        <div className="m-hand" style={{
+          textAlign: 'center', marginTop: 26, color: V.inkMute, fontSize: 17,
+        }}>— thank you for showing up —</div>
+      )}
     </div>
   );
 }
@@ -4415,11 +4511,83 @@ function DividerRow({ V }) {
 // ─────────────────────────────────────────────────────────
 // MENTOR PROFILE
 // ─────────────────────────────────────────────────────────
+// Animated count-up: eases a number from 0 → target once `active` is true.
+function useCountUp(target, active, duration) {
+  const [val, setVal] = React.useState(0);
+  React.useEffect(() => {
+    if (!active) return;
+    const num = Number(target) || 0;
+    if (num === 0) { setVal(0); return; }
+    let raf, t0;
+    const dur = duration || 900;
+    const tick = (t) => {
+      if (!t0) t0 = t;
+      const p = Math.min(1, (t - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic
+      setVal(num * eased);
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else setVal(num);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, active, duration]);
+  return val;
+}
+
+// One animated stat tile: count-up number + icon chip + staggered entrance.
+function StatCard({ V, dense, card, index, active }) {
+  const v = useCountUp(card.val, active, 850 + index * 120);
+  const display = card.dec ? v.toFixed(1) : Math.round(v).toLocaleString();
+  const isEmpty = (Number(card.val) || 0) === 0;
+  return (
+    <div style={{
+      background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 18,
+      padding: dense ? '13px 8px 12px' : '15px 8px 13px',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
+      backgroundImage: V.paper ? PAPER_NOISE : undefined,
+      backgroundSize: V.paper ? '240px 240px' : undefined,
+      opacity: active ? 1 : 0,
+      transform: active ? 'translateY(0) scale(1)' : 'translateY(10px) scale(0.96)',
+      transition: `opacity .5s ease ${index * 90}ms, transform .5s cubic-bezier(.34,1.56,.64,1) ${index * 90}ms`,
+    }}>
+      <div style={{
+        width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+        background: card.tint + '22',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>{card.icon(card.tint)}</div>
+      <div className="m-serif" style={{ fontSize: dense ? 20 : 23, color: V.ink, lineHeight: 1,
+        fontVariantNumeric: 'tabular-nums' }}>{isEmpty ? '—' : display}</div>
+      <div style={{ fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
+        letterSpacing: '0.1em', fontWeight: 600 }}>{card.label}</div>
+    </div>
+  );
+}
+
 function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMessage }) {
   const m = mentor || MENTORS[0];
   const pad = dense ? 14 : 18;
   const [faved, setFaved] = React.useState(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
+  // Follow state — persisted per-mentor. Following bumps the visible follower
+  // tally by one so the action feels real.
+  const followKey = 'mentora_follows';
+  const readFollows = () => { try { return JSON.parse(localStorage.getItem(followKey) || '{}'); } catch (e) { return {}; } };
+  const [following, setFollowing] = React.useState(() => !!readFollows()[m.id]);
+  React.useEffect(() => { setFollowing(!!readFollows()[m.id]); }, [m.id]);
+  const [followPop, setFollowPop] = React.useState(0);
+  const toggleFollow = () => {
+    setFollowing(prev => {
+      const next = !prev;
+      const all = readFollows();
+      if (next) all[m.id] = 1; else delete all[m.id];
+      try { localStorage.setItem(followKey, JSON.stringify(all)); } catch (e) {}
+      return next;
+    });
+    setFollowPop(p => p + 1);
+  };
+  // Entrance gate for the animated stats (count-up + stagger).
+  const [statsIn, setStatsIn] = React.useState(false);
+  React.useEffect(() => { const t = setTimeout(() => setStatsIn(true), 120); return () => clearTimeout(t); }, [m.id]);
   // Live mentors (from the DB) lack demo-only fields like mutuals/yearsTeaching.
   const isLive = !Array.isArray(m.mutuals);
   const courseList = m.courses || [];
@@ -4543,54 +4711,61 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMe
         )}
       </div>
 
-      {/* Stats row */}
-      <div style={{
-        display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
-        margin: `${dense ? 18 : 22}px ${pad}px 0`,
-        background: V.surface, border: `1px solid ${V.rule}`,
-        borderRadius: 18,
-        backgroundImage: V.paper ? PAPER_NOISE : undefined,
-        backgroundSize: V.paper ? '240px 240px' : undefined,
-      }}>
-        {[
-          { v: (isLive ? liveRating : m.rating) > 0 ? (isLive ? liveRating : m.rating).toFixed(1) : '—', l: 'Rating', icon: '★', color: V.ink },
-          { v: isLive ? liveStudents : m.students, l: 'Students' },
-          { v: isLive ? (courseList.length + (courseList.length === 1 ? ' class' : ' classes')) : (m.yearsTeaching + 'y'), l: isLive ? '' : 'Teaching' },
-        ].map((s, i) => (
-          <div key={i} style={{
-            padding: dense ? '14px 8px' : '18px 8px', textAlign: 'center',
-            borderLeft: i === 0 ? 'none' : `1px dashed ${V.rule}`,
+      {/* Stats — animated cards (rating · students · classes) */}
+      {(() => {
+        const ratingVal = (isLive ? liveRating : m.rating) || 0;
+        const studentsVal = (isLive ? liveStudents : m.students) || 0;
+        const classesVal = courseList.length;
+        const cards = [
+          { key: 'rating', val: ratingVal, dec: 1, label: 'Rating', tint: '#E8A23D',
+            icon: (c) => <svg width="17" height="17" viewBox="0 0 24 24" fill={c}><path d="M12 2l3 6.5 7 .8-5.2 4.7 1.5 6.9L12 17.8 5.7 20.9l1.5-6.9L2 9.3l7-.8L12 2z"/></svg> },
+          { key: 'students', val: studentsVal, dec: 0, label: studentsVal === 1 ? 'Student' : 'Students', tint: '#3E9C7A',
+            icon: (c) => Icon.users(17, c) },
+          { key: 'classes', val: classesVal, dec: 0, label: classesVal === 1 ? 'Class' : 'Classes', tint: V.accent,
+            icon: (c) => Icon.book(17, c) },
+        ];
+        return (
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10,
+            margin: `${dense ? 18 : 22}px ${pad}px 0`,
           }}>
-            <div className="m-serif" style={{ fontSize: dense ? 19 : 22, color: V.ink, lineHeight: 1 }}>
-              {s.icon && <span style={{ color: s.color || V.accent, marginRight: 2 }}>{s.icon}</span>}
-              {s.v}
-            </div>
-            <div style={{ fontSize: 10.5, color: V.inkMute, marginTop: 4,
-                          textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
-              {s.l}
-            </div>
+            {cards.map((s, i) => (
+              <StatCard key={s.key} V={V} dense={dense} card={s} index={i} active={statsIn} />
+            ))}
           </div>
-        ))}
-      </div>
+        );
+      })()}
 
-      {/* CTAs */}
+      {/* Follow + Message */}
       <div style={{
-        display: 'flex', gap: 10, padding: `${dense ? 14 : 18}px ${pad}px 0`,
+        display: 'flex', gap: 10, padding: `${dense ? 14 : 16}px ${pad}px 0`,
       }}>
+        <button onClick={toggleFollow} className="m-tap" style={{
+          flex: 1.4, position: 'relative', overflow: 'hidden',
+          background: following ? V.surface : V.accent,
+          color: following ? V.ink : '#fffaf0',
+          border: `1.5px solid ${following ? V.rule : V.accent}`,
+          borderRadius: 100, padding: '13px 0',
+          fontSize: 14.5, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+          transition: 'background .25s ease, color .25s ease, border-color .25s ease',
+          boxShadow: following ? 'none' : `0 8px 18px ${V.accent}38`,
+        }}>
+          <span key={followPop} style={{ display: 'inline-flex', alignItems: 'center', gap: 7,
+            animation: followPop ? 'm-followpop .4s cubic-bezier(.34,1.56,.64,1) both' : 'none' }}>
+            {following
+              ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={V.ink} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 6.5"/></svg> Following</>
+              : <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fffaf0" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg> Follow</>}
+          </span>
+        </button>
         <button onClick={() => onMessage && onMessage(m.id)} className="m-tap" style={{
-          flex: 1, background: V.surface, color: V.ink, border: `1px solid ${V.rule}`,
-          borderRadius: 14, padding: '13px 0',
-          fontSize: 14, fontWeight: 600,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          flex: 1, background: V.surface, color: V.ink, border: `1.5px solid ${V.rule}`,
+          borderRadius: 100, padding: '13px 0',
+          fontSize: 14.5, fontWeight: 600,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
           backgroundImage: V.paper ? PAPER_NOISE : undefined,
           backgroundSize: V.paper ? '240px 240px' : undefined,
-        }}>{Icon.message(16, V.ink)} Message</button>
-        <button onClick={() => setFaved(f => !f)} className="m-tap" style={{
-          background: faved ? V.accent : V.surface, color: faved ? '#fff' : V.ink,
-          border: `1px solid ${faved ? V.accent : V.rule}`,
-          borderRadius: 14, padding: '13px 16px',
-          fontSize: 14, fontWeight: 600, transition: 'background .2s ease, color .2s ease',
-        }}>{Icon.heart(17, faved ? '#fff' : V.accent, faved ? '#fff' : 'none')}</button>
+        }}>{Icon.paperPlane(16, V.ink)} Message</button>
       </div>
 
       {/* Bio */}
@@ -7596,6 +7771,14 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
   const isTeacher = role === 'teacher';
   const [filter, setFilter] = useState('all');
   const [composeOpen, setComposeOpen] = useState(false);
+  // Real member directory for the "+" compose sheet (deployed build).
+  const [pickMentors, setPickMentors] = React.useState(null);
+  React.useEffect(() => {
+    const db = (typeof window !== 'undefined') && window.MENTORA_DB;
+    if (!composeOpen || !db) return;
+    const load = db.members ? db.members() : db.mentors();
+    load.then(list => setPickMentors(list || [])).catch(() => setPickMentors([]));
+  }, [composeOpen]);
   // ── Live conversations (Stage 5) ──
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
   const [convos, setConvos] = React.useState(null);
@@ -7716,29 +7899,44 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
             <div className="m-serif" style={{ fontSize: 18, color: V.ink, marginBottom: 2,
               fontWeight: V.polaroid ? 500 : 400 }}>New message</div>
             <div style={{ fontSize: 12, color: V.inkMute, marginBottom: 14 }}>
-              {isTeacher ? 'Start a chat with a student or mentor.' : 'Start a chat with a mentor.'}
+              {DB ? 'Message anyone in the El Gouna community.'
+                  : (isTeacher ? 'Start a chat with a student or mentor.' : 'Start a chat with a mentor.')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {MENTORS.map(m => (
-                <button key={m.id} onClick={() => { setComposeOpen(false); onNewChat && onNewChat(m.id); }}
+              {DB && pickMentors === null && (
+                <div style={{ fontSize: 12.5, color: V.inkMute, padding: '8px 2px' }}>Loading members…</div>
+              )}
+              {DB && Array.isArray(pickMentors) && pickMentors.length === 0 && (
+                <div style={{ fontSize: 12.5, color: V.inkMute, padding: '8px 2px' }}>
+                  No other members to message yet.
+                </div>
+              )}
+              {(DB ? (pickMentors || []) : MENTORS).map(m => (
+                <button key={m.id} onClick={() => { setComposeOpen(false); onNewChat && onNewChat(DB ? m : m.id); }}
                   className="m-tap" style={{
                     display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left',
                     background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 14,
                     padding: '10px 12px',
                   }}>
-                  {m.useAvatar ? (
-                    <div style={{ width: 42, height: 42, borderRadius: '50%', flexShrink: 0,
-                      background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 22 }}>{m.avatar}</div>
-                  ) : (
+                  {m.photo ? (
                     <img src={m.photo} alt="" style={{ width: 42, height: 42, borderRadius: '50%',
                       objectFit: 'cover', flexShrink: 0 }} />
+                  ) : (
+                    <div style={{ width: 42, height: 42, borderRadius: '50%', flexShrink: 0,
+                      background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: m.avatarEmoji || m.avatar ? 22 : 16, fontWeight: 700, color: V.accent }}>
+                      {m.avatarEmoji || m.avatar || m.initial || (m.name || '?')[0]}
+                    </div>
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.1 }}>{m.name}</div>
-                    <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>{m.craft} · {m.city}</div>
+                    {(m.craft || m.city) && (
+                      <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                        {[m.craft, m.city].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
                   </div>
-                  {Icon.chatBubble(18, V.accent)}
+                  {Icon.paperPlane(18, V.accent)}
                 </button>
               ))}
             </div>
@@ -7762,9 +7960,9 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
       </div>
 
       {/* Threads */}
-      {DB && Array.isArray(convos) ? (
+      {DB ? (
         <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {convos.length === 0 && (
+          {convos && convos.length === 0 && (
             <div style={{
               textAlign: 'center', padding: '40px 16px', color: V.inkMute, fontSize: 13,
             }}>
@@ -7781,7 +7979,7 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
               No conversations yet.<br/>Tap + to message a mentor.
             </div>
           )}
-          {convos
+          {(convos || [])
             .filter(c => !prefOf(c.otherId).deleted)
             .slice()
             .sort((a, b) => {
@@ -7841,7 +8039,7 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
                         fontSize: 12.5, color: (c.unread && !pr.muted) ? V.ink : V.inkMute, marginTop: 3,
                         fontWeight: (c.unread && !pr.muted) ? 600 : 400,
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>{c.lastFromMe ? 'You: ' : ''}{c.lastText}</div>
+                      }}>{c.lastFromMe ? 'You: ' : ''}{(typeof c.lastText === 'string' && c.lastText.indexOf('mentora-img::') === 0) ? '📷 Photo' : (typeof c.lastText === 'string' && c.lastText.indexOf('mentora-aud::') === 0) ? '🎤 Voice message' : c.lastText}</div>
                     </div>
                     {c.unread > 0 && !pr.muted && (
                       <span style={{
@@ -7961,6 +8159,57 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// VOICE BUBBLE — inline audio player for voice messages
+// ─────────────────────────────────────────────────────────
+function VoiceBubble({ V, src, secs, mine, mmss }) {
+  const audioRef = React.useRef(null);
+  const [playing, setPlaying] = React.useState(false);
+  const [pos, setPos] = React.useState(0); // 0..1 progress
+  const fg = mine ? '#fffaf0' : V.accent;
+  const track = mine ? 'rgba(255,250,240,0.35)' : V.rule;
+  const toggle = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) { a.play(); setPlaying(true); }
+    else { a.pause(); setPlaying(false); }
+  };
+  // Static waveform bars (deterministic from secs so it looks intentional).
+  const bars = React.useMemo(() => {
+    const n = 26; const out = [];
+    let seed = (secs || 3) * 9301 + 49297;
+    for (let i = 0; i < n; i++) { seed = (seed * 9301 + 49297) % 233280; out.push(0.25 + (seed / 233280) * 0.75); }
+    return out;
+  }, [secs]);
+  const filled = Math.round(pos * bars.length);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 168 }}>
+      <audio ref={audioRef} src={src} preload="metadata"
+        onTimeUpdate={e => { const a = e.target; if (a.duration) setPos(a.currentTime / a.duration); }}
+        onEnded={() => { setPlaying(false); setPos(0); }} />
+      <button onClick={toggle} className="m-tap" aria-label={playing ? 'Pause' : 'Play'} style={{
+        width: 32, height: 32, borderRadius: '50%', flexShrink: 0, border: 'none',
+        background: mine ? 'rgba(255,250,240,0.18)' : V.accentBg,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', color: fg, cursor: 'pointer',
+      }}>
+        {playing
+          ? <svg width="14" height="14" viewBox="0 0 24 24" fill={fg}><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+          : <svg width="14" height="14" viewBox="0 0 24 24" fill={fg}><path d="M7 5l12 7-12 7z"/></svg>}
+      </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1, height: 24 }}>
+        {bars.map((h, i) => (
+          <span key={i} style={{
+            flex: 1, height: `${Math.round(h * 100)}%`, borderRadius: 2,
+            background: i < filled ? fg : track, transition: 'background 0.1s',
+          }} />
+        ))}
+      </div>
+      <span style={{ fontSize: 11, color: mine ? 'rgba(255,250,240,0.85)' : V.inkMute,
+        fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{mmss(secs)}</span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
 // CHAT THREAD — conversation view
 // ─────────────────────────────────────────────────────────
 function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj, liveOther, goBack }) {
@@ -8026,6 +8275,132 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
       setMsgs(m => [...m, { from: 'me', text, when: 'now' }]);
     }
   };
+
+  // ── Photo attachments ──────────────────────────────────────
+  // Image messages are stored as ordinary text with a marker prefix, so the
+  // backend needs no schema change. The picked file is downscaled on-device
+  // first to keep the payload small.
+  const IMG_PREFIX = 'mentora-img::';
+  const fileRef = React.useRef(null);
+  const isImgMsg = (t) => typeof t === 'string' && t.indexOf(IMG_PREFIX) === 0;
+  // Format a message timestamp: ISO strings (live) → "3:45 PM"; demo labels
+  // ("now", "2m") pass through unchanged.
+  const fmtTime = (w) => {
+    if (!w) return '';
+    if (/^\d{4}-\d{2}-\d{2}T/.test(w)) {
+      const d = new Date(w);
+      if (!isNaN(d)) {
+        const now = new Date();
+        const sameDay = d.toDateString() === now.toDateString();
+        const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        return sameDay ? t : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + t;
+      }
+    }
+    return w;
+  };
+  const imgSrc = (t) => t.slice(IMG_PREFIX.length);
+  const sendImage = (dataUrl) => {
+    const body = IMG_PREFIX + dataUrl;
+    if (isLiveChat) {
+      setMsgs(m => [...m, { id: 'tmp' + Date.now(), from: 'me', text: body, when: new Date().toISOString() }]);
+      DB.sendMessage(liveTargetId, body)
+        .then(() => DB.messagesWith(liveTargetId).then(setMsgs))
+        .catch(() => {});
+    } else {
+      setMsgs(m => [...m, { from: 'me', text: body, when: 'now' }]);
+    }
+  };
+  const handleFile = (file) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const max = 1000;
+        let { width, height } = img;
+        if (width > max || height > max) {
+          const s = max / Math.max(width, height);
+          width = Math.round(width * s); height = Math.round(height * s);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        let out;
+        try { out = canvas.toDataURL('image/jpeg', 0.72); }
+        catch (e) { out = reader.result; }
+        sendImage(out);
+      };
+      img.onerror = () => sendImage(reader.result);
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // ── Voice messages ─────────────────────────────────────────
+  // Recorded with MediaRecorder, sent inline as text with the marker
+  // "mentora-aud::<seconds>::<dataUrl>" so the backend stays unchanged.
+  const AUD_PREFIX = 'mentora-aud::';
+  const isAudMsg = (t) => typeof t === 'string' && t.indexOf(AUD_PREFIX) === 0;
+  const parseAud = (t) => {
+    const rest = t.slice(AUD_PREFIX.length);
+    const i = rest.indexOf('::');
+    return { secs: parseInt(rest.slice(0, i), 10) || 0, src: rest.slice(i + 2) };
+  };
+  const sendAudio = (dataUrl, secs) => {
+    const body = AUD_PREFIX + secs + '::' + dataUrl;
+    if (isLiveChat) {
+      setMsgs(m => [...m, { id: 'tmp' + Date.now(), from: 'me', text: body, when: new Date().toISOString() }]);
+      DB.sendMessage(liveTargetId, body)
+        .then(() => DB.messagesWith(liveTargetId).then(setMsgs))
+        .catch(() => {});
+    } else {
+      setMsgs(m => [...m, { from: 'me', text: body, when: 'now' }]);
+    }
+  };
+  const [recording, setRecording] = React.useState(false);
+  const [recSecs, setRecSecs] = React.useState(0);
+  const recRef = React.useRef({ mr: null, chunks: [], stream: null, timer: null, start: 0, cancelled: false });
+  const stopTracks = () => {
+    const r = recRef.current;
+    if (r.timer) { clearInterval(r.timer); r.timer = null; }
+    if (r.stream) { r.stream.getTracks().forEach(t => t.stop()); r.stream = null; }
+  };
+  const startRec = async () => {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      alert('Voice messages aren’t supported on this device/browser.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      const r = recRef.current;
+      r.mr = mr; r.chunks = []; r.stream = stream; r.start = Date.now(); r.cancelled = false;
+      mr.ondataavailable = (e) => { if (e.data && e.data.size) r.chunks.push(e.data); };
+      mr.onstop = () => {
+        const secs = Math.max(1, Math.round((Date.now() - r.start) / 1000));
+        stopTracks();
+        if (r.cancelled || !r.chunks.length) { setRecording(false); setRecSecs(0); return; }
+        const blob = new Blob(r.chunks, { type: r.chunks[0].type || 'audio/webm' });
+        const reader = new FileReader();
+        reader.onload = () => { sendAudio(reader.result, secs); };
+        reader.readAsDataURL(blob);
+        setRecording(false); setRecSecs(0);
+      };
+      mr.start();
+      setRecording(true); setRecSecs(0);
+      r.timer = setInterval(() => setRecSecs(s => s + 1), 1000);
+    } catch (e) {
+      alert('Microphone permission is needed to record a voice message.');
+    }
+  };
+  const stopRec = (cancel) => {
+    const r = recRef.current;
+    r.cancelled = !!cancel;
+    if (r.mr && r.mr.state !== 'inactive') { try { r.mr.stop(); } catch (e) { stopTracks(); setRecording(false); } }
+    else { stopTracks(); setRecording(false); setRecSecs(0); }
+  };
+  React.useEffect(() => () => stopTracks(), []);
+  const mmss = (s) => Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 
   return (
     <div className="m-fade" style={{
@@ -8118,13 +8493,22 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
                 borderRadius: 16,
                 borderBottomRightRadius: mine ? 5 : 16,
                 borderBottomLeftRadius: mine ? 16 : 5,
-                padding: '9px 13px', fontSize: 13.5, lineHeight: 1.45,
-              }}>{m.text}</div>
+                padding: (isImgMsg(m.text) ? 4 : (isAudMsg(m.text) ? '8px 12px' : '9px 13px')),
+                fontSize: 13.5, lineHeight: 1.45,
+                overflow: 'hidden',
+              }}>
+                {isImgMsg(m.text)
+                  ? <img src={imgSrc(m.text)} alt="" style={{ display: 'block', maxWidth: '100%',
+                      width: 200, borderRadius: 12 }} />
+                  : isAudMsg(m.text)
+                  ? (() => { const a = parseAud(m.text); return <VoiceBubble V={V} src={a.src} secs={a.secs} mine={mine} mmss={mmss} />; })()
+                  : m.text}
+              </div>
               <div style={{
                 fontSize: 9.5, color: V.inkMute, marginTop: 3,
                 textAlign: mine ? 'right' : 'left',
                 padding: '0 6px',
-              }}>{m.when}</div>
+              }}>{fmtTime(m.when)}</div>
             </div>
           );
         })}
@@ -8139,27 +8523,71 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
         backgroundImage: V.paper ? PAPER_NOISE : undefined,
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
-        <button className="m-tap" style={{
-          width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-          background: V.bg, border: `1px solid ${V.rule}`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', color: V.ink,
-        }}>{Icon.plus(18)}</button>
-        <input
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') send(); }}
-          placeholder="Write a message…"
-          style={{
-            flex: 1, background: V.bg, border: `1px solid ${V.rule}`,
-            borderRadius: 100, padding: '10px 16px', fontSize: 13.5,
-            color: V.ink, outline: 'none', fontFamily: V.fontSans, minWidth: 0,
-          }} />
-        <button onClick={send} className="m-tap" style={{
-          width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
-          background: V.accent, border: 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: `0 6px 14px ${V.accent}40`,
-        }}>{Icon.send(18, '#fffaf0')}</button>
+        {recording ? (
+          <>
+            {/* Cancel (bin) */}
+            <button onClick={() => stopRec(true)} className="m-tap" aria-label="Cancel recording" style={{
+              width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
+              background: V.bg, border: `1px solid ${V.rule}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', color: V.ink, fontSize: 16,
+            }}>✕</button>
+            {/* Recording status */}
+            <div style={{
+              flex: 1, display: 'flex', alignItems: 'center', gap: 10,
+              background: V.bg, border: `1px solid ${V.rule}`, borderRadius: 100,
+              padding: '9px 16px', minWidth: 0,
+            }}>
+              <span style={{
+                width: 10, height: 10, borderRadius: '50%', background: '#d94b3b',
+                animation: 'm-recpulse 1s ease-in-out infinite', flexShrink: 0,
+              }} />
+              <span style={{ fontSize: 13.5, color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{mmss(recSecs)}</span>
+              <span style={{ fontSize: 12, color: V.inkMute }}>Recording…</span>
+            </div>
+            {/* Stop & send */}
+            <button onClick={() => stopRec(false)} className="m-tap" aria-label="Send voice message" style={{
+              width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
+              background: V.accent, border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: `0 6px 14px ${V.accent}40`,
+            }}>{Icon.send(18, '#fffaf0')}</button>
+          </>
+        ) : (
+          <>
+            <button onClick={() => fileRef.current && fileRef.current.click()} className="m-tap" aria-label="Attach photo" style={{
+              width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
+              background: V.bg, border: `1px solid ${V.rule}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', color: V.ink,
+            }}>{Icon.camera(19)}</button>
+            <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }}
+              onChange={e => { const f = e.target.files && e.target.files[0]; handleFile(f); e.target.value = ''; }} />
+            <input
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') send(); }}
+              placeholder="Write a message…"
+              style={{
+                flex: 1, background: V.bg, border: `1px solid ${V.rule}`,
+                borderRadius: 100, padding: '10px 16px', fontSize: 13.5,
+                color: V.ink, outline: 'none', fontFamily: V.fontSans, minWidth: 0,
+              }} />
+            {draft.trim() ? (
+              <button onClick={send} className="m-tap" aria-label="Send" style={{
+                width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
+                background: V.accent, border: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: `0 6px 14px ${V.accent}40`,
+              }}>{Icon.send(18, '#fffaf0')}</button>
+            ) : (
+              <button onClick={startRec} className="m-tap" aria-label="Record voice message" style={{
+                width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
+                background: V.accent, border: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: `0 6px 14px ${V.accent}40`,
+              }}>{Icon.mic(19, '#fffaf0')}</button>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -8233,6 +8661,8 @@ function MentoraApp({ variant, os, density, scope,
   };
   const [activeThreadId, setActiveThreadId] = useState('t1');
   const [newChatMentorId, setNewChatMentorId] = useState(null);
+  // Full member object chosen from the "+" sheet (covers non-teacher members).
+  const [newChatMentor, setNewChatMentor] = useState(null);
   const [activeOther, setActiveOther] = useState(null);
   // Live unread message count for the bottom-nav badge.
   const [unreadCount, setUnreadCount] = useState(0);
@@ -8352,7 +8782,20 @@ function MentoraApp({ variant, os, density, scope,
   const openNotifications = () => { setReturnTab(['home','courses','explore','settings'].includes(screen) ? screen : 'home'); setScreen('notifications'); };
   const openMessages = () => { setReturnTab(['home','courses','explore','settings'].includes(screen) ? screen : 'home'); setScreen('messages'); };
   const openChat = (threadId) => { if (threadId) setActiveThreadId(threadId); setScreen('chat'); };
-  const openNewChat = (mentorId) => { setActiveOther(null); setNewChatMentorId(mentorId); setActiveThreadId('new'); setScreen('chat'); };
+  // Accepts either a mentor id (from a mentor profile) or a full member object
+  // (from the Messages "+" sheet, which may be any community member, not just a teacher).
+  const openNewChat = (arg) => {
+    setActiveOther(null);
+    if (arg && typeof arg === 'object') {
+      setNewChatMentor(arg);
+      setNewChatMentorId(arg.id);
+    } else {
+      setNewChatMentor(null);
+      setNewChatMentorId(arg);
+    }
+    setActiveThreadId('new');
+    setScreen('chat');
+  };
   const goBack = () => {
     if (screen === 'reviews')  return setScreen('mentor');
     if (screen === 'booking')  return setScreen('mentor');
@@ -8510,7 +8953,7 @@ function MentoraApp({ variant, os, density, scope,
           <ChatThreadScreen V={V} dense={dense} role={role}
                             threadId={activeThreadId} newMentorId={newChatMentorId}
                             liveOther={activeOther}
-                            newMentorObj={(liveMentors || []).find(x => x.id === newChatMentorId) || null}
+                            newMentorObj={newChatMentor || (liveMentors || []).find(x => x.id === newChatMentorId) || null}
                             goBack={goBack} />
         )}
       </PaperBg>
