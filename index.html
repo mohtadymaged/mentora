@@ -2352,7 +2352,7 @@ function SessionDots({ V, sessions, done = 0, size = 10, color, gap = 4, max = 1
 // ─────────────────────────────────────────────────────────
 // HOME SCREEN — returning learner
 // ─────────────────────────────────────────────────────────
-function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, openMessages, profile }) {
+function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, openMessages, openProfile, profile }) {
   const pad = dense ? 14 : 18;
 
   // User profile (the signed-in learner) — from registration, or defaults.
@@ -2381,7 +2381,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
         padding: `${dense ? 8 : 12}px 2px ${dense ? 14 : 18}px`,
       }}>
         {/* Profile photo — large, framed */}
-        <button onClick={() => openMentor && openMentor()} className="m-tap" style={{
+        <button onClick={() => openProfile && openProfile()} className="m-tap" style={{
           background: 'transparent', border: 'none', padding: 0, position: 'relative',
           flexShrink: 0,
         }}>
@@ -5167,6 +5167,128 @@ function RoleScreen({ V, dense, os, onPick, goBack }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// LOGIN — returning users (email + password)
+// ─────────────────────────────────────────────────────────
+function LoginScreen({ V, dense, os, onLogin, goBack, busy }) {
+  const pad = dense ? 22 : 28;
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [focus, setFocus] = useState(null);
+  const [err, setErr] = useState('');
+
+  const submit = () => {
+    setErr('');
+    if (!email || !password) { setErr('Enter your email and password.'); return; }
+    onLogin(email.trim(), password, setErr);
+  };
+
+  const fieldWrap = (name) => ({
+    background: V.surface, border: `1px solid ${focus === name ? V.accent : V.rule}`,
+    borderRadius: 12, padding: '12px 14px',
+    boxShadow: focus === name ? `0 0 0 3px ${V.accent}22` : 'none',
+    transition: 'box-shadow .15s ease, border-color .15s ease',
+    display: 'flex', alignItems: 'center', gap: 8,
+  });
+
+  return (
+    <div data-screen-label="Login" className="m-fade" style={{
+      minHeight: '100%', display: 'flex', flexDirection: 'column',
+      fontFamily: V.fontSans, color: V.ink, paddingBottom: 16,
+    }}>
+      {/* Top bar */}
+      <div style={{ display: 'flex', alignItems: 'center', padding: `4px ${pad}px ${dense ? 6 : 10}px` }}>
+        <button onClick={goBack} className="m-tap" style={{
+          width: 36, height: 36, borderRadius: '50%', background: V.surface,
+          border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: V.ink,
+        }}>{Icon.back(18)}</button>
+      </div>
+
+      {/* Header */}
+      <BlurFade delay={0.05} duration={0.55} yOffset={8}>
+        <div style={{ padding: `${dense ? 16 : 26}px ${pad}px ${dense ? 18 : 26}px` }}>
+          <div className="m-hand" style={{ color: V.ribbon, fontSize: 17, marginBottom: 4 }}>
+            welcome back
+          </div>
+          <h1 className="m-serif" style={{
+            fontSize: dense ? 30 : 36, color: V.ink, lineHeight: 1.05,
+            letterSpacing: '-0.02em', margin: 0, fontWeight: V.polaroid ? 500 : 400,
+          }}>
+            Good to see you<br/><em style={{ fontStyle: 'italic', color: V.accent }}>again</em>.
+          </h1>
+        </div>
+      </BlurFade>
+
+      {/* Form */}
+      <BlurFade delay={0.2} duration={0.55} yOffset={8}>
+        <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <label style={{ display: 'block' }}>
+            <div style={{ fontSize: 10.5, letterSpacing: '0.14em', textTransform: 'uppercase',
+              color: V.inkMute, fontWeight: 600, marginBottom: 6 }}>Email</div>
+            <div style={fieldWrap('email')}>
+              <input type="email" value={email} autoComplete="email"
+                onChange={e => setEmail(e.target.value)}
+                onFocus={() => setFocus('email')} onBlur={() => setFocus(null)}
+                placeholder="you@example.com"
+                style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+                  outline: 'none', fontSize: 15, color: V.ink, fontFamily: V.fontSans, padding: 0 }} />
+            </div>
+          </label>
+
+          <label style={{ display: 'block' }}>
+            <div style={{ fontSize: 10.5, letterSpacing: '0.14em', textTransform: 'uppercase',
+              color: V.inkMute, fontWeight: 600, marginBottom: 6 }}>Password</div>
+            <div style={fieldWrap('password')}>
+              <input type={showPw ? 'text' : 'password'} value={password} autoComplete="current-password"
+                onChange={e => setPassword(e.target.value)}
+                onFocus={() => setFocus('password')} onBlur={() => setFocus(null)}
+                placeholder="Your password"
+                onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+                style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+                  outline: 'none', fontSize: 15, color: V.ink, fontFamily: V.fontSans, padding: 0 }} />
+              <button type="button" onClick={() => setShowPw(s => !s)} className="m-tap" style={{
+                background: 'transparent', border: 'none', padding: 4, cursor: 'pointer',
+                color: V.inkMute, display: 'flex',
+              }}>{showPw ? Icon.eyeOff(18, V.inkMute) : Icon.eye(18, V.inkMute)}</button>
+            </div>
+          </label>
+
+          {err && (
+            <div style={{ fontSize: 12.5, color: '#fff', background: V.accent,
+              padding: '9px 12px', borderRadius: 10, fontWeight: 500 }}>
+              {err}
+            </div>
+          )}
+        </div>
+      </BlurFade>
+
+      {/* Submit */}
+      <BlurFade delay={0.34} duration={0.55} yOffset={8}>
+        <div style={{ padding: `${dense ? 18 : 26}px ${pad}px 0`, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <button onClick={submit} disabled={busy} className="m-tap" style={{
+            width: '100%', background: V.accent, color: '#fff', border: 'none',
+            borderRadius: 16, padding: '16px 0', fontSize: 15, fontWeight: 700,
+            letterSpacing: '0.01em', boxShadow: `0 10px 22px ${V.accent}45`,
+            opacity: busy ? 0.6 : 1,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}>
+            {busy ? 'Signing in…' : <>Sign in {Icon.arrow(17, '#fff')}</>}
+          </button>
+          <div style={{ textAlign: 'center', fontSize: 13, color: V.inkSoft }}>
+            New here?{' '}
+            <button onClick={goBack} style={{ background: 'transparent', border: 'none',
+              color: V.accent, fontWeight: 700, fontSize: 13, padding: 0, cursor: 'pointer' }}>
+              Create an account
+            </button>
+          </div>
+        </div>
+      </BlurFade>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
 // REGISTRATION
 // ─────────────────────────────────────────────────────────
 function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
@@ -6781,6 +6903,18 @@ function MentoraApp({ variant, os, density, scope,
       setScreen('home');
     }
   };
+  const handleLogin = (email, password, setErr) => {
+    if (!DB) { setScreen('home'); return; }
+    setAuthBusy(true);
+    DB.signIn(email, password)
+      .then(() => DB.currentProfile())
+      .then(p => {
+        if (p) { setProfile(p); setRole(p.role || 'learner'); }
+        setScreen('home');
+      })
+      .catch(err => { if (setErr) setErr(err.message || 'Could not sign in.'); })
+      .finally(() => setAuthBusy(false));
+  };
   const handleSignOut = () => {
     if (DB) DB.signOut().catch(() => {});
     setProfile(null);
@@ -6819,7 +6953,7 @@ function MentoraApp({ variant, os, density, scope,
     setScreen(id);
   };
 
-  const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register';
+  const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
   const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat'; // these have their own bottom bars
   // Which tab reads as active (messages screen lights the Messages tab;
   // settings screen lights the Profile tab).
@@ -6848,13 +6982,13 @@ function MentoraApp({ variant, os, density, scope,
         {screen === 'welcome' && (
           <WelcomeScreen V={V} dense={dense} os={os}
                          onEnter={() => setScreen('landing')}
-                         onSignIn={() => setScreen('home')} />
+                         onSignIn={() => setScreen('login')} />
         )}
         {screen === 'landing' && (
           <LandingScreen V={V} dense={dense} os={os}
                          onEnter={() => setScreen('role')}
                          onTeach={() => { setRole('teacher'); setScreen('register'); }}
-                         onSignIn={() => setScreen('home')} />
+                         onSignIn={() => setScreen('login')} />
         )}
         {screen === 'role' && (
           <RoleScreen V={V} dense={dense} os={os}
@@ -6866,6 +7000,12 @@ function MentoraApp({ variant, os, density, scope,
                           onSubmit={handleRegister}
                           goBack={goBack} />
         )}
+        {screen === 'login' && (
+          <LoginScreen V={V} dense={dense} os={os}
+                       busy={authBusy}
+                       onLogin={handleLogin}
+                       goBack={() => setScreen('welcome')} />
+        )}
         {screen === 'home' && (role === 'teacher' ? (
           <TeacherProfileScreen V={V} dense={dense}
                                 profile={profile}
@@ -6876,6 +7016,7 @@ function MentoraApp({ variant, os, density, scope,
           <HomeScreen V={V} dense={dense}
                       profile={profile}
                       openMentor={openMentor}
+                      openProfile={() => setScreen('settings')}
                       openReviews={openReviews}
                       openNotifications={openNotifications}
                       openMessages={openMessages}
