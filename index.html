@@ -11,6 +11,101 @@
   html, body { margin: 0; padding: 0; height: 100%; background: #000; font-family: 'Inter', -apple-system, system-ui, sans-serif; overflow: hidden; }
   #root { height: 100%; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// Mentora — Supabase connection config (public anon key; safe for front-end).
+// Used by the deployed full-screen build to enable real auth + profiles.
+window.MENTORA_SUPABASE = {
+  url: "https://ewujqgurdmhdikjkkucv.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3dWpxZ3VyZG1oZGlramtrdWN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4ODA3MDUsImV4cCI6MjA5NDQ1NjcwNX0.GJfSqAmGP_Oza6WsSkTdRoCzLarcufa1EaU4cHygVZg",
+};
+
+</script>
+<script>
+// Mentora — Supabase auth + profile helpers (Stage 1).
+// Loaded only in the deployed full-screen build. Exposes window.MENTORA_DB.
+// Requires: supabase-js UMD loaded first (window.supabase), then supabase-config.js.
+(function () {
+  var cfg = window.MENTORA_SUPABASE;
+  if (!window.supabase || !cfg) {
+    console.warn("[Mentora] Supabase not configured — running in demo mode.");
+    return;
+  }
+  var sb = window.supabase.createClient(cfg.url, cfg.anonKey);
+
+  // Map the registration form object → profiles columns.
+  function profileFields(p) {
+    return {
+      full_name: p.name || null,
+      role: p.role || "learner",
+      avatar_url: p.photoMode === "photo" ? (p.photoSrc || null) : (p.avatar || null),
+      unit_number: p.unit || null,
+      zone: p.zone || null,
+      residency: p.residency || null,
+      age: p.age ? parseInt(p.age, 10) : null,
+      account_type: p.accountType || "sole",
+    };
+  }
+
+  window.MENTORA_DB = {
+    client: sb,
+
+    // Sign up: create account, then fill the profile row (trigger creates the
+    // base row; we update it with the rest of the registration data).
+    async signUp(email, password, p) {
+      const { data, error } = await sb.auth.signUp({
+        email, password,
+        options: { data: { full_name: p.name || "" } },
+      });
+      if (error) throw error;
+      const uid = data.user && data.user.id;
+      if (uid) {
+        // Upsert in case the trigger row already exists.
+        const { error: pErr } = await sb.from("profiles")
+          .update(profileFields(p)).eq("id", uid);
+        if (pErr) console.warn("[Mentora] profile save:", pErr.message);
+      }
+      return data;
+    },
+
+    async signIn(email, password) {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      return data;
+    },
+
+    async signOut() { await sb.auth.signOut(); },
+
+    // Returns the signed-in user's profile (or null).
+    async currentProfile() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return null;
+      const { data, error } = await sb.from("profiles")
+        .select("*").eq("id", session.user.id).single();
+      if (error) return null;
+      // Shape it like the app's `profile` object.
+      return {
+        name: data.full_name,
+        role: data.role,
+        avatar: (data.avatar_url && !data.avatar_url.startsWith("data:")) ? data.avatar_url
+              : (data.avatar_url && data.avatar_url.length <= 8 ? data.avatar_url : null),
+        photoMode: data.avatar_url && data.avatar_url.startsWith("data:") ? "photo" : null,
+        photoSrc: data.avatar_url && data.avatar_url.startsWith("data:") ? data.avatar_url : null,
+      };
+    },
+
+    // Live courses (Stage 2 — available now if you want to use it).
+    async courses() {
+      const { data, error } = await sb.from("courses")
+        .select("*").eq("published", true).order("created_at", { ascending: false });
+      if (error) { console.warn("[Mentora] courses:", error.message); return []; }
+      return data;
+    },
+  };
+  console.log("[Mentora] Supabase connected ✓");
+})();
+
+</script>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
@@ -5593,7 +5688,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
         padding: `${dense ? 10 : 16}px ${pad}px 0`,
         display: 'flex', flexDirection: 'column', gap: 10,
       }}>
-        <button onClick={() => onSubmit({ role, name: form.name, photoMode, photoSrc, avatar: photoMode === 'avatar' ? AVATARS[avatarIdx] : null })} className="m-tap" disabled={!agreed}
+        <button onClick={() => onSubmit({ role, name: form.name, email: form.email, password: form.password, unit: form.unit, zone: form.zone, residency, accountType, age: form.age, photoMode, photoSrc, avatar: photoMode === 'avatar' ? AVATARS[avatarIdx] : null })} className="m-tap" disabled={!agreed}
           style={{
             position: 'relative', overflow: 'hidden',
             background: V.accent, color: '#fffaf0',
@@ -6645,6 +6740,35 @@ function MentoraApp({ variant, os, density, scope,
   const [newChatMentorId, setNewChatMentorId] = useState(null);
   const [returnTab, setReturnTab] = useState('home');
   const [profile, setProfile] = useState(null);
+  const [authBusy, setAuthBusy] = useState(false);
+
+  // ── Live Supabase auth (deployed build only; demo stays unchanged) ──
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  // On load: if already signed in, jump straight to Home with the real profile.
+  React.useEffect(() => {
+    if (!DB || !fullScreen) return;
+    DB.currentProfile().then(p => {
+      if (p) { setProfile(p); setRole(p.role || 'learner'); setScreen('home'); }
+    }).catch(() => {});
+  }, []);
+  // Called by Register submit — real account + profile when connected, else demo.
+  const handleRegister = (p) => {
+    if (DB && p.email && p.password) {
+      setAuthBusy(true);
+      DB.signUp(p.email, p.password, p)
+        .then(() => { setProfile(p); setScreen('home'); })
+        .catch(err => { alert(err.message || 'Sign-up failed'); })
+        .finally(() => setAuthBusy(false));
+    } else {
+      if (p && p.name) setProfile(p);
+      setScreen('home');
+    }
+  };
+  const handleSignOut = () => {
+    if (DB) DB.signOut().catch(() => {});
+    setProfile(null);
+    setScreen('landing');
+  };
   const scrollRef = React.useRef(null);
   // Reset scroll to top whenever the screen changes (so Home/Courses/etc.
   // always open at the top, not wherever the previous screen was scrolled).
@@ -6722,7 +6846,7 @@ function MentoraApp({ variant, os, density, scope,
         )}
         {screen === 'register' && (
           <RegisterScreen V={V} dense={dense} os={os} role={role}
-                          onSubmit={(p) => { if (p && p.name) setProfile(p); setScreen('home'); }}
+                          onSubmit={handleRegister}
                           goBack={goBack} />
         )}
         {screen === 'home' && (role === 'teacher' ? (
@@ -6761,7 +6885,7 @@ function MentoraApp({ variant, os, density, scope,
         {screen === 'settings' && (
           <SettingsScreen V={V} dense={dense} role={role}
                           profile={profile}
-                          onSignOut={() => setScreen('landing')} />
+                          onSignOut={handleSignOut} />
         )}
         {screen === 'booking' && (
           <BookingScreen V={V} dense={dense} mentor={mentor}
