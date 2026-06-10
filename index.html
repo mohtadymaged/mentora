@@ -2172,9 +2172,6 @@ function TabBar({ V, active, onChange, os, messageBadge = 0, scrollRef, userPhot
   const rootRef = React.useRef(null);
   // compact = shrunk pill (icons only). Grows back when scrolling up / at rest.
   const [compact, setCompact] = React.useState(false);
-  // One-shot chat-icon wiggle: plays once on mount (when empty), and again on
-  // each tap of the Messages tab. Bumping the key remounts → re-fires the CSS.
-  const [chatWiggle, setChatWiggle] = React.useState(1);
 
   // Prefer an explicitly-passed scroll container (fullScreen layout, where the
   // scroller is a SIBLING). Fall back to walking up the ancestor chain (canvas
@@ -2242,7 +2239,7 @@ function TabBar({ V, active, onChange, os, messageBadge = 0, scrollRef, userPhot
         {tabs.map(t => {
           const isActive = active === t.id;
           return (
-            <button key={t.id} onClick={() => { if (t.id === 'messages') setChatWiggle(n => n + 1); onChange(t.id); }}
+            <button key={t.id} onClick={() => onChange(t.id)}
               className="m-tap"
               style={{
                 background: isActive ? V.accent : 'transparent',
@@ -2281,12 +2278,6 @@ function TabBar({ V, active, onChange, os, messageBadge = 0, scrollRef, userPhot
                   }}>
                     <img src={t.photo} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </span>
-                ) : t.id === 'messages' && (t.badge || 0) === 0 ? (
-                  <span key={chatWiggle} style={{
-                    display: 'inline-flex',
-                    animation: 'm-chatswing 1s ease-in-out 0.3s 1 both',
-                    transformOrigin: '50% 80%',
-                  }}>{t.icon(22, 'currentColor')}</span>
                 ) : t.icon(22, 'currentColor')}
                 {t.badge > 0 && (
                   <span style={{
@@ -7616,6 +7607,9 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
     try { localStorage.setItem('mentora_chat_prefs', JSON.stringify(next)); } catch (e) {}
   };
   const [menuFor, setMenuFor] = React.useState(null); // otherId whose long-press menu is open
+  // One-shot bounce for the empty-state 💬 emoji: plays once when it appears,
+  // and replays each time the user taps it (bumping the key remounts the span).
+  const [emojiPop, setEmojiPop] = React.useState(1);
   React.useEffect(() => {
     if (!DB) return;
     DB.conversations().then(setConvos).catch(() => setConvos([]));
@@ -7774,7 +7768,16 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
             <div style={{
               textAlign: 'center', padding: '40px 16px', color: V.inkMute, fontSize: 13,
             }}>
-              <div style={{ fontSize: 30, marginBottom: 8 }}>💬</div>
+              <div
+                key={emojiPop}
+                onClick={() => setEmojiPop(n => n + 1)}
+                style={{
+                  fontSize: 36, marginBottom: 10, cursor: 'pointer',
+                  display: 'inline-block',
+                  animation: 'm-chatswing 0.95s cubic-bezier(.36,.07,.19,.97) 0.25s 1 both',
+                  transformOrigin: '50% 85%',
+                }}
+              >💬</div>
               No conversations yet.<br/>Tap + to message a mentor.
             </div>
           )}
@@ -8234,8 +8237,9 @@ function MentoraApp({ variant, os, density, scope,
   // Live unread message count for the bottom-nav badge.
   const [unreadCount, setUnreadCount] = useState(0);
   const refreshUnread = React.useCallback(() => {
-    if (!DB) { setUnreadCount(0); return; }
-    DB.conversations()
+    const db = (typeof window !== 'undefined') && window.MENTORA_DB;
+    if (!db) { setUnreadCount(0); return; }
+    db.conversations()
       .then(list => {
         let prefs = {};
         try { prefs = JSON.parse(localStorage.getItem('mentora_chat_prefs') || '{}'); } catch (e) {}
@@ -8247,7 +8251,7 @@ function MentoraApp({ variant, os, density, scope,
         setUnreadCount(total);
       })
       .catch(() => setUnreadCount(0));
-  }, [DB]);
+  }, []);
   // Keep the nav unread badge in sync: on first load and whenever we leave
   // the messages/chat surfaces (so reading a thread clears the count).
   React.useEffect(() => { refreshUnread(); }, [refreshUnread, screen]);
