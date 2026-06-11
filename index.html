@@ -4338,8 +4338,114 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
     ...c, mentor: m,
   })));
 
+  // ── Search & filters ──────────────────────────────────
+  const [query, setQuery] = useState('');
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [sortBy, setSortBy] = useState('popular');
+  const [priceBand, setPriceBand] = useState('all');
+  const exploreRef = React.useRef(null);
+  const [sheetTarget, setSheetTarget] = useState(null);
+  // The filter sheet must anchor to the non-scrolling screen wrapper
+  // (the [data-mvar] element), not the scrolling content — so it covers
+  // the viewport no matter how far the page is scrolled.
+  React.useEffect(() => {
+    if (!filterOpen) return;
+    let el = exploreRef.current;
+    while (el && !(el.getAttribute && el.getAttribute('data-mvar'))) el = el.parentElement;
+    setSheetTarget(el || document.body);
+  }, [filterOpen]);
+  const q = query.trim().toLowerCase();
+  const searching = q.length > 0;
+  const filtersActive = sortBy !== 'popular' || priceBand !== 'all';
+
+  const inBand = (price) => {
+    const p = price || 0;
+    if (priceBand === 'free') return p === 0;
+    if (priceBand === 'under') return p > 0 && p < 1000;
+    if (priceBand === 'over') return p >= 1000;
+    return true;
+  };
+  const popOf = (c) => (c.enrolled != null ? c.enrolled : (c.students || 0));
+  const sortCourses = (arr) => {
+    const a = arr.slice();
+    if (sortBy === 'priceLow') a.sort((x, y) => (x.price || 0) - (y.price || 0));
+    else if (sortBy === 'priceHigh') a.sort((x, y) => (y.price || 0) - (x.price || 0));
+    else a.sort((x, y) => popOf(y) - popOf(x));
+    return a;
+  };
+
+  const mMatch = (m) => !q
+    || [m.name, m.short, m.craft, m.city].filter(Boolean).some(s => String(s).toLowerCase().includes(q))
+    || (m.courses || []).some(c => String(c.title || '').toLowerCase().includes(q));
+  const txtC = (c) => [c.title, c.category, c.area].filter(Boolean).some(s => String(s).toLowerCase().includes(q));
+  const txtCDemo = (c) => [c.title, c.category, c.mentor && c.mentor.short, c.mentor && c.mentor.name, c.mentor && c.mentor.craft]
+    .filter(Boolean).some(s => String(s).toLowerCase().includes(q));
+  const cMatch = (c) => inBand(c.price) && (!q || txtC(c));
+  const cMatchDemo = (c) => inBand(c.price) && (!q || txtCDemo(c));
+
+  const isLive = !!(liveCourses && liveCourses.length > 0);
+  const liveShown = liveCourses ? sortCourses(liveCourses.filter(c => (cat === 'All' || c.category === cat) && cMatch(c))) : null;
+  const demoShown = sortCourses(allCourses.filter(cMatchDemo));
+  // Search mode ignores the category chips — it searches the whole catalog.
+  const searchCourses = isLive ? sortCourses(liveCourses.filter(cMatch))
+                       : (liveCourses ? [] : demoShown);
+  const baseMentors = (liveMentors && liveMentors.length) ? liveMentors : MENTORS;
+  const matchedMentors = baseMentors.filter(mMatch);
+  const browseCount = isLive ? (liveShown ? liveShown.length : 0) : demoShown.length;
+
+  const noResults = (
+    <div style={{ textAlign: 'center', padding: '28px 22px', background: V.surface,
+                  border: `1px dashed ${V.rule}`, borderRadius: 18, color: V.inkMute, fontSize: 13 }}>
+      No classes match “{query.trim()}”.
+    </div>
+  );
+
+  // Shared course card — used by browse search results.
+  const CourseRow = ({ c }) => {
+    const left = (c.seats || 0) - (c.enrolled || 0);
+    return (
+      <button onClick={() => openMentor && openMentor(isLive ? c.mentor_id : (c.mentor && c.mentor.id))} className="m-tap" style={{
+        width: '100%', textAlign: 'left', background: V.surface, border: `1px solid ${V.rule}`,
+        borderRadius: 16, padding: dense ? 12 : 14, display: 'flex', alignItems: 'center', gap: 12,
+        backgroundImage: V.paper ? PAPER_NOISE : undefined, backgroundSize: V.paper ? '240px 240px' : undefined,
+      }}>
+        <div style={{ width: 48, height: 48, borderRadius: 12, background: V.accentBg,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{c.emoji || '📚'}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.2 }}>{c.title}</div>
+          {isLive ? (
+            <>
+              <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                {c.area ? c.area : 'El Gouna'}{c.schedule ? ` · ${c.schedule}` : ''}
+              </div>
+              <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: V.inkSoft }}>
+                <span>{c.enrolled || 0}/{c.seats || 0} seats</span>
+                {left > 0 && left <= 5 && <span style={{ color: V.accent, fontWeight: 700 }}>· {left} left</span>}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>
+                by {c.mentor.short} · {c.students} students
+              </div>
+              <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: V.ink }}>
+                <Stars rating={c.rating} size={10} color={V.accent} />
+                <span style={{ fontWeight: 600 }}>{c.rating}</span>
+              </div>
+            </>
+          )}
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
+            {c.price > 0 ? `$${c.price}` : 'Free'}
+          </div>
+        </div>
+      </button>
+    );
+  };
+
   return (
-    <div className="m-fade" style={{ paddingBottom: 116, padding: `4px ${pad}px 116px`,
+    <div ref={exploreRef} className="m-fade" style={{ paddingBottom: 116, padding: `4px ${pad}px 116px`,
                                      fontFamily: V.fontSans }}>
       {/* Header */}
       <div style={{ padding: `${dense ? 6 : 12}px 2px ${dense ? 14 : 18}px` }}>
@@ -4363,15 +4469,105 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
         {Icon.search(17, V.inkMute)}
-        <span style={{ flex: 1, color: V.inkMute, fontSize: 14 }}>
-          Search mentors, crafts, topics…
-        </span>
-        <button style={{
-          background: 'transparent', border: 'none', color: V.ink,
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Search mentors, crafts, topics…"
+          style={{
+            flex: 1, minWidth: 0, border: 'none', outline: 'none',
+            background: 'transparent', color: V.ink, fontSize: 14,
+            fontFamily: V.fontSans,
+          }}
+        />
+        {query && (
+          <button onClick={() => setQuery('')} aria-label="Clear search" className="m-tap" style={{
+            background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={V.inkSoft} strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        )}
+        <button onClick={() => setFilterOpen(true)} aria-label="Filters" className="m-tap" style={{
+          position: 'relative', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>{Icon.filter(16, V.inkSoft)}</button>
+        }}>
+          {Icon.filter(16, filtersActive ? V.accent : V.inkSoft)}
+          {filtersActive && <span style={{ position: 'absolute', top: -3, right: -3, width: 7, height: 7,
+            borderRadius: '50%', background: V.accent, border: `1.5px solid ${V.surface}` }} />}
+        </button>
       </div>
 
+      {/* Active filter summary */}
+      {filtersActive && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: dense ? 14 : 16, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11.5, color: V.inkMute }}>
+            {sortBy === 'priceLow' ? 'Price: low to high' : sortBy === 'priceHigh' ? 'Price: high to low' : 'Most popular'}
+            {priceBand !== 'all' ? ` · ${priceBand === 'free' ? 'Free' : priceBand === 'under' ? 'Under 1,000 EGP' : '1,000 EGP+'}` : ''}
+          </span>
+          <button onClick={() => { setSortBy('popular'); setPriceBand('all'); }} className="m-tap" style={{
+            background: 'transparent', border: 'none', color: V.accent, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: 0 }}>
+            Reset
+          </button>
+        </div>
+      )}
+
+      {searching ? (
+        /* ── Search results mode ── */
+        <div className="m-fade">
+          <div style={{ fontSize: 12.5, color: V.inkMute, marginBottom: dense ? 14 : 16 }}>
+            {matchedMentors.length + searchCourses.length} result{(matchedMentors.length + searchCourses.length) === 1 ? '' : 's'} for “{query.trim()}”
+          </div>
+          {matchedMentors.length > 0 && (
+            <>
+              <SectionHead V={V} eyebrow="People" title="Mentors" dense={dense} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: dense ? 20 : 24 }}>
+                {matchedMentors.map(m => {
+                  const useEmoji = m.avatarEmoji || (m.useAvatar && m.avatar);
+                  return (
+                    <button key={m.id} onClick={() => openMentor(m.id)} className="m-tap" style={{
+                      display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left',
+                      background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 14, padding: '10px 12px',
+                      backgroundImage: V.paper ? PAPER_NOISE : undefined, backgroundSize: V.paper ? '240px 240px' : undefined,
+                    }}>
+                      {useEmoji ? (
+                        <div style={{ width: 42, height: 42, borderRadius: '50%', flexShrink: 0, background: V.accentBg,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>{m.avatarEmoji || m.avatar}</div>
+                      ) : m.photo ? (
+                        <img src={m.photo} alt="" style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                      ) : (
+                        <div style={{ width: 42, height: 42, borderRadius: '50%', flexShrink: 0, background: V.accent, color: '#fff',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700 }}>{m.initial || (m.short || m.name || 'M')[0]}</div>
+                      )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.1 }}>{m.name || m.short}</div>
+                        {(m.craft || m.city) && <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>{[m.craft, m.city].filter(Boolean).join(' · ')}</div>}
+                      </div>
+                      {Icon.chevron(15, V.inkMute)}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          {searchCourses.length > 0 ? (
+            <>
+              <SectionHead V={V} eyebrow="Classes" title="Courses" dense={dense} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
+                {searchCourses.map(c => <CourseRow key={c.id} c={c} />)}
+              </div>
+            </>
+          ) : matchedMentors.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '34px 22px', background: V.surface,
+                          border: `1px dashed ${V.rule}`, borderRadius: 18 }}>
+              <div style={{ fontSize: 34, marginBottom: 10 }}>🔍</div>
+              <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>Nothing found</div>
+              <div style={{ fontSize: 12.5, color: V.inkMute, lineHeight: 1.5 }}>
+                No mentors or classes match “{query.trim()}”. Try a craft like “watercolor”, or a neighbor's name.
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : (<>
       {/* Category chips */}
       <div style={{
         display: 'flex', gap: 8, marginBottom: dense ? 18 : 22, overflowX: 'auto',
@@ -4400,10 +4596,11 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
         margin: `0 -${pad}px ${dense ? 22 : 28}px`, padding: `4px ${pad}px`,
       }}>
         {(() => {
-          const list = (liveMentors && liveMentors.length) ? liveMentors : MENTORS;
+          const base = (liveMentors && liveMentors.length) ? liveMentors : MENTORS;
+          const list = base.filter(mMatch);
           if (!list.length) return (
             <div style={{ fontSize: 12.5, color: V.inkMute, padding: '6px 2px' }}>
-              No mentors yet — be the first to teach!
+              {q ? `No mentors match “${query.trim()}”.` : 'No mentors yet — be the first to teach!'}
             </div>
           );
           return list.map((m, i) => {
@@ -4449,9 +4646,9 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
       {/* Trending courses */}
       <SectionHead V={V} eyebrow="Trending this week" title="Popular courses" dense={dense} />
       {liveCourses && liveCourses.length > 0 ? (
+        liveShown.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
-          {liveCourses
-            .filter(c => cat === 'All' || c.category === cat)
+          {liveShown
             .map(c => {
               const left = (c.seats || 0) - (c.enrolled || 0);
               return (
@@ -4491,6 +4688,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
               );
             })}
         </div>
+        ) : noResults
       ) : liveCourses ? (
         // Connected, but no published courses yet — friendly empty state.
         <div style={{
@@ -4507,8 +4705,9 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
         </div>
       ) : (
         // Demo build (no backend) — original sample list.
+        demoShown.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
-          {allCourses.slice(0, 5).map(c => (
+          {(q ? demoShown : demoShown.slice(0, 5)).map(c => (
             <button key={c.id} onClick={() => openMentor(c.mentor.id)} className="m-tap" style={{
               width: '100%', textAlign: 'left',
               background: V.surface, border: `1px solid ${V.rule}`,
@@ -4545,7 +4744,66 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
             </button>
           ))}
         </div>
+        ) : noResults
       )}
+      </>)}
+
+      {/* Filter & sort sheet */}
+      {filterOpen && sheetTarget && ReactDOM.createPortal((
+        <div onClick={() => setFilterOpen(false)} style={{
+          position: 'absolute', inset: 0, zIndex: 60, background: 'rgba(20,16,12,0.45)',
+          display: 'flex', alignItems: 'flex-end',
+        }}>
+          <div onClick={e => e.stopPropagation()} className="m-fade" style={{
+            width: '100%', background: V.bg, borderRadius: '22px 22px 0 0',
+            padding: `14px ${pad}px calc(${pad}px + 8px)`, maxHeight: '82%', overflowY: 'auto',
+            boxShadow: '0 -8px 30px rgba(20,16,12,0.25)',
+          }}>
+            <div style={{ width: 40, height: 4, borderRadius: 100, background: V.rule, margin: '0 auto 14px' }} />
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div className="m-serif" style={{ fontSize: 18, color: V.ink, fontWeight: V.polaroid ? 500 : 400 }}>Filter &amp; sort</div>
+              <button onClick={() => { setSortBy('popular'); setPriceBand('all'); }} className="m-tap" style={{
+                background: 'transparent', border: 'none', color: filtersActive ? V.accent : V.inkMute,
+                fontSize: 12.5, fontWeight: 700, cursor: 'pointer', padding: 0 }}>Reset</button>
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: V.inkMute, marginBottom: 9 }}>Sort by</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
+              {[['popular', 'Most popular'], ['priceLow', 'Price: low to high'], ['priceHigh', 'Price: high to low']].map(([id, label]) => {
+                const on = sortBy === id;
+                return (
+                  <button key={id} onClick={() => setSortBy(id)} className="m-tap" style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', textAlign: 'left',
+                    background: on ? V.accentBg : V.surface, border: `1px solid ${on ? V.accent : V.rule}`,
+                    borderRadius: 13, padding: '12px 14px', fontSize: 13.5, color: V.ink, fontWeight: on ? 600 : 500 }}>
+                    {label}
+                    {on && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={V.accent} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: V.inkMute, marginBottom: 9 }}>Price</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 22 }}>
+              {[['all', 'Any price'], ['free', 'Free'], ['under', 'Under 1,000 EGP'], ['over', '1,000 EGP+']].map(([id, label]) => {
+                const on = priceBand === id;
+                return (
+                  <button key={id} onClick={() => setPriceBand(id)} className="m-tap" style={{
+                    background: on ? V.accent : V.surface, color: on ? '#fffaf0' : V.ink,
+                    border: `1px solid ${on ? V.accent : V.rule}`, padding: '9px 16px', borderRadius: 100,
+                    fontSize: 12.5, fontWeight: 600 }}>{label}</button>
+                );
+              })}
+            </div>
+
+            <button onClick={() => setFilterOpen(false)} className="m-tap" style={{
+              width: '100%', background: V.ink, color: V.bg, border: 'none', borderRadius: 14,
+              padding: '14px', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: V.fontSans }}>
+              Show {browseCount} {browseCount === 1 ? 'class' : 'classes'}
+            </button>
+          </div>
+        </div>
+      ), sheetTarget)}
     </div>
   );
 }
@@ -8084,7 +8342,7 @@ function NotificationsScreen({ V, dense, role, goBack, openChat }) {
 // ─────────────────────────────────────────────────────────
 // CHAT LIST — 1:1 mentor↔learner + class group threads
 // ─────────────────────────────────────────────────────────
-function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat }) {
+function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenConversation }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   const [filter, setFilter] = useState('all');
