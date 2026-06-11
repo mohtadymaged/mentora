@@ -69,6 +69,45 @@ window.MENTORA_SUPABASE = {
   // returning to the app), flush any pending profile fields.
   sb.auth.onAuthStateChange((_evt, session) => { if (session) flushPendingProfile(); });
 
+  // ── Notification presentation helpers ──
+  // Default emoji + CTA per kind; a row's own icon/action_label override these.
+  var NOTIF_ICON = { message: "\uD83D\uDCAC", enroll: "\uD83C\uDF93", review: "\u2B50", booking: "\uD83D\uDCC5", seat: "\uD83C\uDF93", session: "\uD83D\uDCC5", payout: "\uD83D\uDCB0", ribbon: "\uD83E\uDEB4", class: "\uD83E\uDDD1\u200D\uD83C\uDFEB" };
+  var NOTIF_ACTION = { message: "Open chat", review: "Reply", seat: "Enroll", booking: "View roster", session: "View roster" };
+  function notifWhen(iso) {
+    var t = new Date(iso).getTime(); if (isNaN(t)) return "";
+    var mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (mins < 1) return "now";
+    if (mins < 60) return mins + "m";
+    var hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + "h";
+    var days = Math.round(hrs / 24);
+    if (days < 7) return ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(iso).getDay()];
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  function notifGroup(iso) {
+    var t = new Date(iso).getTime(); if (isNaN(t)) return "Earlier";
+    var hrs = (Date.now() - t) / 3600000;
+    if (hrs < 24) return "New";
+    if (hrs < 24 * 7) return "Earlier this week";
+    return "Earlier";
+  }
+  function shapeNotification(r) {
+    return {
+      id: r.id,
+      group: notifGroup(r.created_at),
+      icon: r.icon || NOTIF_ICON[r.kind] || "\uD83D\uDD14",
+      kind: r.kind,
+      title: r.title,
+      body: r.body || "",
+      when: notifWhen(r.created_at),
+      unread: !r.read_at,
+      action: r.action_label || NOTIF_ACTION[r.kind] || null,
+      accent: !!r.accent,
+      ribbon: !!r.ribbon,
+      threadWith: r.thread_with || null,   // open a live chat with this member
+    };
+  }
+
   window.MENTORA_DB = {
     client: sb,
     flushPendingProfile,
@@ -97,6 +136,39 @@ window.MENTORA_SUPABASE = {
     },
 
     async signOut() { await sb.auth.signOut(); },
+
+    // Send a password-reset email. The link returns the user to the app.
+    async resetPassword(email) {
+      const { error } = await sb.auth.resetPasswordForEmail(email, {
+        redirectTo: (typeof window !== 'undefined') ? window.location.origin + window.location.pathname : undefined,
+      });
+      if (error) throw error;
+      return true;
+    },
+
+    // Live updates: fire onNotif when my notifications change and onMessage when a
+    // message involving me arrives. Returns an unsubscribe function.
+    subscribeRealtime(handlers) {
+      handlers = handlers || {};
+      let chan = null, cancelled = false;
+      sb.auth.getSession().then(function (res) {
+        const session = res && res.data && res.data.session;
+        if (!session || cancelled) return;
+        const me = session.user.id;
+        chan = sb.channel('mentora-rt-' + me)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: 'recipient_id=eq.' + me },
+            function () { if (handlers.onNotif) handlers.onNotif(); })
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'recipient_id=eq.' + me },
+            function () { if (handlers.onMessage) handlers.onMessage(); })
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'sender_id=eq.' + me },
+            function () { if (handlers.onMessage) handlers.onMessage(); })
+          .subscribe();
+      });
+      return function unsubscribe() {
+        cancelled = true;
+        if (chan) { try { sb.removeChannel(chan); } catch (e) {} }
+      };
+    },
 
     // Returns the signed-in user's profile (or null).
     async currentProfile() {
@@ -140,6 +212,7 @@ window.MENTORA_SUPABASE = {
       const soft = {}; // columns that may not exist
       if (fields.bio !== undefined)   soft.bio = fields.bio;
       if (fields.craft !== undefined) soft.craft = fields.craft;
+      if (fields.accountType !== undefined) soft.account_type = fields.accountType;
       let res = await sb.from("profiles").update(Object.assign({}, hard, soft)).eq("id", session.user.id);
       if (res.error && Object.keys(soft).length) {
         res = await sb.from("profiles").update(hard).eq("id", session.user.id); // retry without optional cols
@@ -358,6 +431,144 @@ window.MENTORA_SUPABASE = {
       if (!session) return;
       await sb.from("messages").update({ read_at: new Date().toISOString() })
         .eq("recipient_id", session.user.id).eq("sender_id", otherId).is("read_at", null);
+    },
+
+    // ── Notifications feed (self-populated by DB triggers) ──
+    // Newest first, shaped to the fields the Notifications screen renders.
+    async notifications() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const { data, error } = await sb.from("notifications")
+        .select("*").eq("recipient_id", session.user.id)
+        .order("created_at", { ascending: false }).limit(50);
+      if (error) { console.warn("[Mentora] notifications:", error.message); return []; }
+      return (data || []).map(shapeNotification);
+    },
+
+    // Count of unread notifications — for the bell badge.
+    async unreadNotifications() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return 0;
+      const { count, error } = await sb.from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("recipient_id", session.user.id).is("read_at", null);
+      if (error) return 0;
+      return count || 0;
+    },
+
+    // Mark the whole feed read.
+    async markAllNotificationsRead() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return;
+      await sb.from("notifications").update({ read_at: new Date().toISOString() })
+        .eq("recipient_id", session.user.id).is("read_at", null);
+    },
+
+    // Persist the Settings notification toggles so triggers can honour them.
+    async saveNotifPrefs(prefs) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return;
+      await sb.from("profiles").update({ notif_prefs: prefs }).eq("id", session.user.id);
+    },
+
+    // ── Payment methods (learner) — non-sensitive card metadata only ──
+    async paymentMethods() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const { data, error } = await sb.from("payment_methods")
+        .select("*").eq("owner_id", session.user.id)
+        .order("is_default", { ascending: false }).order("created_at", { ascending: false });
+      if (error) { console.warn("[Mentora] paymentMethods:", error.message); return []; }
+      return data || [];
+    },
+    async addPaymentMethod(card) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const mine = await this.paymentMethods();
+      const row = {
+        owner_id: session.user.id,
+        brand: card.brand || "card", last4: card.last4,
+        exp_month: card.exp_month, exp_year: card.exp_year,
+        holder: card.holder || null,
+        is_default: mine.length === 0 ? true : !!card.is_default,
+      };
+      const { data, error } = await sb.from("payment_methods").insert(row).select().single();
+      if (error) throw error;
+      return data;
+    },
+    async setDefaultPaymentMethod(id) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return;
+      await sb.from("payment_methods").update({ is_default: true })
+        .eq("id", id).eq("owner_id", session.user.id);
+    },
+    async removePaymentMethod(id) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return;
+      await sb.from("payment_methods").delete().eq("id", id).eq("owner_id", session.user.id);
+    },
+
+    // ── Payout account (teacher) — one bank/payout destination ──
+    async payoutAccount() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return null;
+      const { data, error } = await sb.from("payout_accounts")
+        .select("*").eq("owner_id", session.user.id).maybeSingle();
+      if (error) { console.warn("[Mentora] payoutAccount:", error.message); return null; }
+      return data;
+    },
+    async savePayoutAccount(acct) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const row = {
+        owner_id: session.user.id,
+        bank_name: acct.bank_name || null, account_name: acct.account_name || null,
+        iban_last4: acct.iban_last4 || null, payout_email: acct.payout_email || null,
+        updated_at: new Date().toISOString(),
+      };
+      const { data, error } = await sb.from("payout_accounts").upsert(row).select().single();
+      if (error) throw error;
+      return data;
+    },
+
+    // ── Account security ──
+    async changePassword(newPassword) {
+      const { error } = await sb.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      return true;
+    },
+    async accountEmail() {
+      const { data: { session } } = await sb.auth.getSession();
+      return session ? session.user.email : null;
+    },
+
+    // ── Family members (managed child profiles under a family account) ──
+    async familyMembers() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const { data, error } = await sb.from("family_members")
+        .select("*").eq("parent_id", session.user.id).order("created_at", { ascending: true });
+      if (error) { console.warn("[Mentora] familyMembers:", error.message); return []; }
+      return data || [];
+    },
+    async addFamilyMember(m) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      const row = { parent_id: session.user.id, name: m.name, age: (m.age != null ? m.age : null),
+        avatar: m.avatar || null, relation: m.relation || "child" };
+      const { data, error } = await sb.from("family_members").insert(row).select().single();
+      if (error) throw error;
+      return data;
+    },
+    async updateFamilyMember(id, patch) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return;
+      await sb.from("family_members").update(patch).eq("id", id).eq("parent_id", session.user.id);
+    },
+    async removeFamilyMember(id) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return;
+      await sb.from("family_members").delete().eq("id", id).eq("parent_id", session.user.id);
     },
 
     // Reviews received across all the signed-in teacher's classes (real).
@@ -2306,11 +2517,10 @@ function VariantCSS({ variantKey, scope }) {
         from { opacity: 0; transform: translateY(14px) scale(0.985); }
         to   { opacity: 1; transform: translateY(0) scale(1); }
       }
-      [data-mvar="${scope}"] .m-wheel-in { animation: m-wheel-in-${scope} 0.46s cubic-bezier(.2,.9,.3,1) both; transform-origin: center; }
+      [data-mvar="${scope}"] .m-wheel-in { animation: m-wheel-in-${scope} 0.42s cubic-bezier(.22,.8,.3,1) both; }
       @keyframes m-wheel-in-${scope} {
-        from { opacity: 0; transform: scale(0.82); }
-        60%  { opacity: 1; }
-        to   { opacity: 1; transform: scale(1); }
+        from { opacity: 0; transform: translateY(10px); }
+        to   { opacity: 1; transform: translateY(0); }
       }
       [data-mvar="${scope}"] .m-tap { transition: transform .14s cubic-bezier(.2,.7,.2,1), box-shadow .2s ease, background .15s ease; }
       [data-mvar="${scope}"] .m-num { font-family: 'Fredoka', 'Space Grotesk', 'Inter', sans-serif; font-weight: 600; letter-spacing: 0; }
@@ -2886,6 +3096,11 @@ const notoSrc = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/l
 const notoStatic = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/latest/${NOTO_CP[ch]}/512.png` : null;
 // Curated avatar set — every animal here has a Noto animation.
 const AVATAR_SET = ['🦊','🐻','🦉','🐼','🐸','🦁','🐙','🐢','🐧','🐱','🦄','🦦'];
+// Warm the thumbnail cache at load so the picker wheel never pops in image-by-
+// image the first time it's opened.
+if (typeof Image !== 'undefined') {
+  AVATAR_SET.forEach(function (ch) { try { const im = new Image(); im.src = notoStatic(ch); } catch (e) {} });
+}
 // Renders an avatar as its Noto artwork that plays its animation ONCE (no loop)
 // on appear, and replays once on hover. Falls back to the native glyph when
 // there's no animation for that character.
@@ -3165,7 +3380,7 @@ function AvatarWheel({ avatars, value, onChange, V, big }) {
     </div>
   );
 }
-function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, openMessages, openProfile, openCourses, openExplore, profile, liveCourses, enrollments }) {
+function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, notifUnread, openMessages, openProfile, openCourses, openExplore, profile, liveCourses, enrollments }) {
   const pad = dense ? 14 : 18;
 
   // User profile (the signed-in learner) — from registration, or defaults.
@@ -3303,11 +3518,13 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
             color: V.ink, position: 'relative',
           }}>
             {Icon.bell(18)}
+            {notifUnread > 0 && (
             <span style={{
               position: 'absolute', top: 6, right: 8, width: 8, height: 8,
               borderRadius: '50%', background: V.accent,
               border: `1.5px solid ${V.surface}`,
             }} />
+            )}
           </button>
         </div>
       </div>
@@ -3775,7 +3992,7 @@ function SessionForm({ V, dense, courses, onClose, onCreate }) {
 // ─────────────────────────────────────────────────────────
 // TEACHER PROFILE — my courses, my calendar, my reviews
 // ─────────────────────────────────────────────────────────
-function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMessages, profile, openCreateCourse, myLiveCourses }) {
+function TeacherProfileScreen({ V, dense, openReviews, openNotifications, notifUnread, openMessages, profile, openCreateCourse, myLiveCourses }) {
   // The signed-in teacher is "Layla" (MENTORS[0]) — override with registration.
   const baseMe = MENTORS[0];
   const me = {
@@ -3935,11 +4152,13 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
             color: V.ink, position: 'relative',
           }}>
             {Icon.bell(18)}
+            {notifUnread > 0 && (
             <span style={{
               position: 'absolute', top: 6, right: 8, width: 8, height: 8,
               borderRadius: '50%', background: V.accent,
               border: `1.5px solid ${V.surface}`,
             }} />
+            )}
           </button>
         </div>
       </div>
@@ -5271,11 +5490,11 @@ function EditProfileScreen({ V, dense, role, profile, onSave, goBack }) {
   const [name, setName] = useState((profile && profile.name) || '');
   const [bio, setBio]   = useState((profile && profile.bio) || '');
   const [craft, setCraft] = useState((profile && profile.craft) || '');
-  const initialMode = (profile && profile.photoMode === 'photo') ? 'photo'
-                    : (profile && profile.avatar) ? 'avatar' : null;
+  const initialMode = (profile && profile.photoMode === 'photo') ? 'photo' : 'avatar';
   const [photoMode, setPhotoMode] = useState(initialMode);
   const [photoSrc, setPhotoSrc]   = useState((profile && profile.photoSrc) || null);
   const [avatarVal, setAvatarVal] = useState((profile && profile.avatar) || AVATARS[0]);
+  const [accountType, setAccountType] = useState((profile && profile.accountType) || 'sole');
 
   const onPickFile = (e) => {
     const f = e.target.files && e.target.files[0];
@@ -5291,6 +5510,7 @@ function EditProfileScreen({ V, dense, role, profile, onSave, goBack }) {
     if (photoMode === 'photo' && photoSrc) { patch.photoMode = 'photo'; patch.photoSrc = photoSrc; patch.avatar = null; }
     else if (photoMode === 'avatar')        { patch.photoMode = null; patch.photoSrc = null; patch.avatar = avatarVal; }
     else                                    { patch.photoMode = null; patch.photoSrc = null; patch.avatar = null; }
+    patch.accountType = accountType;
     onSave && onSave(patch);
   };
 
@@ -5298,7 +5518,6 @@ function EditProfileScreen({ V, dense, role, profile, onSave, goBack }) {
     (profile && profile.unit) ? { label: 'Unit', value: profile.unit } : null,
     (profile && profile.zone) ? { label: 'Zone', value: 'Zone ' + profile.zone } : null,
     (profile && profile.residency) ? { label: 'Residency', value: profile.residency.charAt(0).toUpperCase() + profile.residency.slice(1) } : null,
-    (profile && profile.accountType) ? { label: 'Account', value: profile.accountType === 'family' ? 'Family' : 'Sole' } : null,
   ].filter(Boolean);
 
   return (
@@ -5330,52 +5549,42 @@ function EditProfileScreen({ V, dense, role, profile, onSave, goBack }) {
       {/* Body */}
       <div style={{ flex: 1, overflowY: 'auto', padding: `${dense ? 16 : 20}px ${pad}px calc(${pad}px + 12px)` }}>
         {/* Avatar / photo picker */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: dense ? 18 : 22 }}>
-          {photoMode === 'avatar' ? (
-            <AvatarWheel avatars={AVATARS} value={avatarVal} onChange={setAvatarVal} V={V} big={96} />
-          ) : (
-          <div style={{
-            width: 96, height: 96, borderRadius: '50%',
-            background: V.accentBg, border: `2px solid ${V.surface}`,
-            boxShadow: '0 6px 16px rgba(60,30,20,0.14)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            overflow: 'hidden', position: 'relative',
-          }}>
-            {photoMode === 'photo' && photoSrc ? (
-              <img src={photoSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            ) : (
-              <AvatarFace ch={ANON_AVATAR} size={76} />
-            )}
-          </div>
-          )}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, marginBottom: dense ? 18 : 22 }}>
           <input ref={fileRef} type="file" accept="image/*" onChange={onPickFile} style={{ display: 'none' }} />
-          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-            <button type="button" onClick={() => fileRef.current && fileRef.current.click()} className="m-tap" style={{
-              flex: 1, padding: '10px 0', borderRadius: 12,
-              background: photoMode === 'photo' ? V.accent : V.surface,
-              color: photoMode === 'photo' ? '#fffaf0' : V.ink,
-              border: `1px solid ${photoMode === 'photo' ? V.accent : V.rule}`,
-              fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            }}><span style={{ fontSize: 15 }}>📷</span> Upload photo</button>
-            <button type="button" onClick={() => setPhotoMode(m => m === 'avatar' ? null : 'avatar')} className="m-tap" style={{
-              flex: 1, padding: '10px 0', borderRadius: 12,
-              background: photoMode === 'avatar' ? V.accent : V.surface,
-              color: photoMode === 'avatar' ? '#fffaf0' : V.ink,
-              border: `1px solid ${photoMode === 'avatar' ? V.accent : V.rule}`,
-              fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            }}><span style={{ fontSize: 15 }}>🐾</span> Pick avatar</button>
-          </div>
-          {photoMode === 'avatar' && (
-            <div className="m-fade" style={{ fontSize: 11, color: V.inkMute, textAlign: 'center' }}>
-              Swipe to find one that feels like you.
-            </div>
-          )}
-          {(photoMode === 'photo' && photoSrc) && (
-            <button type="button" onClick={() => { setPhotoSrc(null); setPhotoMode(null); }} className="m-tap" style={{
-              background: 'transparent', border: 'none', color: V.inkMute, fontSize: 11.5, cursor: 'pointer', padding: 0,
-            }}>Remove photo</button>
+          {photoMode === 'photo' && photoSrc ? (
+            <React.Fragment>
+              <div style={{
+                width: 96, height: 96, borderRadius: '50%', overflow: 'hidden',
+                border: `2px solid ${V.surface}`, boxShadow: '0 6px 16px rgba(60,30,20,0.14)',
+              }}>
+                <img src={photoSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </div>
+              <button type="button" onClick={() => { setPhotoSrc(null); setPhotoMode('avatar'); }}
+                className="m-tap" style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
+                  background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 100,
+                  padding: '9px 18px', fontSize: 12.5, fontWeight: 600, color: V.ink, cursor: 'pointer',
+                }}><span style={{ fontSize: 14 }}>🐾</span> Choose an avatar</button>
+            </React.Fragment>
+          ) : (
+            <React.Fragment>
+              <div style={{
+                fontSize: 10.5, letterSpacing: '0.12em', textTransform: 'uppercase',
+                color: V.inkMute, fontWeight: 700,
+              }}>Pick your avatar</div>
+              <AvatarWheel avatars={AVATARS} value={avatarVal} onChange={setAvatarVal} V={V} big={96} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, width: 150, margin: '3px 0 1px' }}>
+                  <div style={{ flex: 1, height: 1, background: V.rule }} />
+                  <span style={{ fontSize: 10.5, color: V.inkMute, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>or</span>
+                  <div style={{ flex: 1, height: 1, background: V.rule }} />
+                </div>
+              <button type="button" onClick={() => fileRef.current && fileRef.current.click()}
+                className="m-tap" style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
+                  background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 100,
+                  padding: '9px 18px', fontSize: 12.5, fontWeight: 600, color: V.ink, cursor: 'pointer',
+                }}><span style={{ fontSize: 14 }}>📷</span> Upload a photo</button>
+            </React.Fragment>
           )}
         </div>
 
@@ -5414,6 +5623,29 @@ function EditProfileScreen({ V, dense, role, profile, onSave, goBack }) {
           </EditField>
         )}
 
+        {/* Account type — switch between just-me and family */}
+        <EditField V={V} dense={dense} label="Account type">
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[['sole', '🌱', 'Just me'], ['family', '🪴', 'Family']].map(([id, ic, lbl]) => {
+              const on = accountType === id;
+              return (
+                <button key={id} type="button" onClick={() => setAccountType(id)} className="m-tap" style={{
+                  flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+                  padding: '11px 0', borderRadius: 12, cursor: 'pointer',
+                  background: on ? V.accentBg : V.surface,
+                  border: `1.5px solid ${on ? V.accent : V.rule}`,
+                  color: V.ink, fontSize: 13.5, fontWeight: on ? 700 : 500,
+                }}><span style={{ fontSize: 15 }}>{ic}</span>{lbl}</button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: V.inkMute, marginTop: 7, lineHeight: 1.4 }}>
+            {accountType === 'family'
+              ? 'Manage your kids under “Family & kids” in Settings.'
+              : 'Switch to Family to connect your kids and book classes for them.'}
+          </div>
+        </EditField>
+
         {/* Read-only El Gouna record */}
         {record.length > 0 && (
           <EditField V={V} dense={dense} label="Your El Gouna record">
@@ -5441,7 +5673,7 @@ function EditProfileScreen({ V, dense, role, profile, onSave, goBack }) {
 // ─────────────────────────────────────────────────────────
 // SETTINGS TAB
 // ─────────────────────────────────────────────────────────
-function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile }) {
+function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, openSub }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   const baseMe = MENTORS[0]; // signed-in user — Layla either way for demo
@@ -5469,6 +5701,9 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile }) {
   const setNotif = (key) => setNotifs(n => {
     const next = { ...n, [key]: !n[key] };
     try { localStorage.setItem('mentora_notif_prefs', JSON.stringify(next)); } catch (e) {}
+    // Persist to the backend so notification triggers honour the toggle.
+    const _db = (typeof window !== 'undefined') && window.MENTORA_DB;
+    if (_db && _db.saveNotifPrefs) _db.saveNotifPrefs(next).catch(() => {});
     return next;
   });
 
@@ -5599,17 +5834,23 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile }) {
       }}>
         <SettingsGroupHead V={V} pad={pad}>Account</SettingsGroupHead>
         {isTeacher
-          ? <Row icon={<span style={{ fontSize: 15 }}>💰</span>} label="Payouts & banking" value="May 15" />
-          : <Row icon={<span style={{ fontSize: 15 }}>💳</span>} label="Payment method" value="•••• 4242" />
+          ? <Row icon={<span style={{ fontSize: 15 }}>💰</span>} label="Payouts & banking" value="May 15" onClick={() => openSub && openSub('payouts')} />
+          : <Row icon={<span style={{ fontSize: 15 }}>💳</span>} label="Payment method" onClick={() => openSub && openSub('payment')} />
         }
         <DividerRow V={V} />
         {!isTeacher && (
           <>
-            <Row icon={<span style={{ fontSize: 15 }}>🧾</span>} label="Purchase history" value="$216" />
+            <Row icon={<span style={{ fontSize: 15 }}>🧾</span>} label="Purchase history" onClick={() => openSub && openSub('purchases')} />
             <DividerRow V={V} />
           </>
         )}
-        <Row icon={<span style={{ fontSize: 15 }}>🔒</span>} label="Password & security" />
+        <Row icon={<span style={{ fontSize: 15 }}>🔒</span>} label="Password & security" onClick={() => openSub && openSub('password')} />
+        {profile && profile.accountType === 'family' && (
+          <>
+            <DividerRow V={V} />
+            <Row icon={<span style={{ fontSize: 15 }}>👨‍👧</span>} label="Family & kids" onClick={() => openSub && openSub('family')} />
+          </>
+        )}
       </div>
 
       {/* Notifications */}
@@ -5649,9 +5890,9 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile }) {
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
         <SettingsGroupHead V={V} pad={pad}>Support</SettingsGroupHead>
-        <Row icon={<span style={{ fontSize: 15 }}>💬</span>} label="Help & community guidelines" />
+        <Row icon={<span style={{ fontSize: 15 }}>💬</span>} label="Help & community guidelines" onClick={() => openSub && openSub('help')} />
         <DividerRow V={V} />
-        <Row icon={<span style={{ fontSize: 15 }}>📜</span>} label="Terms & privacy" />
+        <Row icon={<span style={{ fontSize: 15 }}>📜</span>} label="Terms & privacy" onClick={() => openSub && openSub('terms')} />
         <DividerRow V={V} />
         <Row icon={Icon.logout(15, '#b5462e')} label="Sign out" danger onClick={onSignOut} />
       </div>
@@ -5662,6 +5903,396 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile }) {
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────
+// ACCOUNT & SUPPORT SUB-SCREENS (full slide-in, real data)
+// ─────────────────────────────────────────────────────────
+function SubScreen({ V, dense, title, eyebrow, goBack, children }) {
+  const pad = dense ? 14 : 18;
+  return (
+    <div className="m-fade" style={{ minHeight: '100%', fontFamily: V.fontSans, color: V.ink, paddingBottom: 40 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: `8px ${pad}px ${dense ? 10 : 14}px`,
+        position: 'sticky', top: 0, zIndex: 5, background: V.bg,
+        backgroundImage: V.paper ? PAPER_NOISE : undefined, backgroundSize: V.paper ? '240px 240px' : undefined,
+      }}>
+        <button onClick={goBack} className="m-tap" style={{
+          width: 36, height: 36, borderRadius: '50%', background: V.surface,
+          border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: V.ink, flexShrink: 0,
+        }}>{Icon.back(18)}</button>
+        <div style={{ flex: 1 }}>
+          {eyebrow && <div className="m-hand" style={{ fontSize: 16, color: V.ribbon, lineHeight: 1 }}>{eyebrow}</div>}
+          <div className="m-serif" style={{ fontSize: 19, color: V.ink, lineHeight: 1.1, fontWeight: V.polaroid ? 500 : 400 }}>{title}</div>
+        </div>
+      </div>
+      <div style={{ padding: `4px ${pad}px` }}>{children}</div>
+    </div>
+  );
+}
+
+function subInput(V, props) {
+  return <input {...props} style={{
+    width: '100%', boxSizing: 'border-box', background: V.surface,
+    border: `1px solid ${V.rule}`, borderRadius: 12, padding: '12px 14px',
+    fontSize: 15, color: V.ink, fontFamily: V.fontSans, outline: 'none', ...(props.style || {}),
+  }} />;
+}
+function subLabel(V, text) {
+  return <div style={{ fontSize: 10.5, letterSpacing: '0.12em', textTransform: 'uppercase',
+    color: V.inkMute, fontWeight: 700, margin: '0 2px 6px' }}>{text}</div>;
+}
+function subCard(V, children, extra) {
+  return <div style={{ background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 18,
+    padding: 16, marginBottom: 12, backgroundImage: V.paper ? PAPER_NOISE : undefined,
+    backgroundSize: V.paper ? '240px 240px' : undefined, ...(extra || {}) }}>{children}</div>;
+}
+function subPrimaryBtn(V, label, onClick, opts) {
+  opts = opts || {};
+  return <button onClick={onClick} disabled={opts.disabled} className="m-tap" style={{
+    width: '100%', background: opts.disabled ? V.rule : V.accent, color: '#fffaf0', border: 'none',
+    borderRadius: 14, padding: '14px', fontSize: 14, fontWeight: 700,
+    cursor: opts.disabled ? 'default' : 'pointer', fontFamily: V.fontSans, opacity: opts.disabled ? 0.7 : 1,
+  }}>{opts.busy ? 'Saving…' : label}</button>;
+}
+
+const CARD_BRANDS = { visa: { name: 'Visa', tint: '#1a1f71' }, mastercard: { name: 'Mastercard', tint: '#cc3b2e' },
+  amex: { name: 'Amex', tint: '#1c7ed6' }, card: { name: 'Card', tint: '#6b5b4d' } };
+function brandFromNumber(num) {
+  const n = (num || '').replace(/\D/g, '');
+  if (/^4/.test(n)) return 'visa';
+  if (/^(5[1-5]|2[2-7])/.test(n)) return 'mastercard';
+  if (/^3[47]/.test(n)) return 'amex';
+  return 'card';
+}
+
+function PaymentMethodsScreen({ V, dense, goBack }) {
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const [cards, setCards] = React.useState(DB ? null : []);
+  const [adding, setAdding] = React.useState(false);
+  const [num, setNum] = React.useState(''); const [exp, setExp] = React.useState(''); const [holder, setHolder] = React.useState('');
+  const [busy, setBusy] = React.useState(false); const [err, setErr] = React.useState('');
+  const load = React.useCallback(() => {
+    if (!DB) { setCards([]); return; }
+    DB.paymentMethods().then(setCards).catch(() => setCards([]));
+  }, [DB]);
+  React.useEffect(() => { load(); }, [load]);
+
+  const digits = num.replace(/\D/g, '');
+  const brand = brandFromNumber(num);
+  const expOk = /^\d{2}\/\d{2}$/.test(exp);
+  const valid = digits.length >= 13 && expOk;
+  const fmtNum = (v) => v.replace(/\D/g, '').slice(0, 16).replace(/(.{4})/g, '$1 ').trim();
+  const fmtExp = (v) => { const d = v.replace(/\D/g, '').slice(0, 4); return d.length > 2 ? d.slice(0, 2) + '/' + d.slice(2) : d; };
+
+  const addCard = () => {
+    if (!valid || !DB) return;
+    setBusy(true); setErr('');
+    const [mm, yy] = exp.split('/');
+    DB.addPaymentMethod({ brand, last4: digits.slice(-4), exp_month: +mm, exp_year: 2000 + (+yy), holder: holder.trim() })
+      .then(() => { setAdding(false); setNum(''); setExp(''); setHolder(''); load(); })
+      .catch(e => setErr(e.message || 'Could not save card.'))
+      .finally(() => setBusy(false));
+  };
+  const makeDefault = (id) => { if (DB) DB.setDefaultPaymentMethod(id).then(load).catch(() => {}); };
+  const remove = (id) => { if (DB) DB.removePaymentMethod(id).then(load).catch(() => {}); };
+
+  return (
+    <SubScreen V={V} dense={dense} eyebrow="how you pay —" title="Payment methods" goBack={goBack}>
+      {cards === null ? (
+        <div style={{ color: V.inkMute, fontSize: 13, padding: '20px 2px' }}>Loading…</div>
+      ) : cards.length === 0 && !adding ? (
+        <div style={{ textAlign: 'center', padding: '32px 16px 20px' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>💳</div>
+          <div className="m-serif" style={{ fontSize: 16, marginBottom: 4 }}>No cards saved</div>
+          <div style={{ fontSize: 12.5, color: V.inkMute }}>Add a card to enrol in paid classes faster.</div>
+        </div>
+      ) : (
+        cards.map(c => {
+          const b = CARD_BRANDS[c.brand] || CARD_BRANDS.card;
+          return (
+            <div key={c.id} style={{
+              background: V.surface, border: `1px solid ${c.is_default ? V.accent : V.rule}`, borderRadius: 18,
+              padding: 16, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 14,
+            }}>
+              <div style={{ width: 44, height: 30, borderRadius: 6, background: b.tint, color: '#fff',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800,
+                letterSpacing: '0.04em', flexShrink: 0 }}>{b.name.slice(0, 4).toUpperCase()}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, color: V.ink, fontWeight: 600 }}>•••• {c.last4}</div>
+                <div style={{ fontSize: 11.5, color: V.inkMute, marginTop: 2 }}>
+                  Exp {String(c.exp_month).padStart(2, '0')}/{String(c.exp_year).slice(-2)}
+                  {c.is_default && <span style={{ color: V.accent, fontWeight: 700 }}> · Default</span>}
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+                {!c.is_default && <button onClick={() => makeDefault(c.id)} className="m-tap" style={{
+                  background: 'transparent', border: 'none', color: V.accent, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', padding: 2 }}>Set default</button>}
+                <button onClick={() => remove(c.id)} className="m-tap" style={{
+                  background: 'transparent', border: 'none', color: V.inkMute, fontSize: 11.5, cursor: 'pointer', padding: 2 }}>Remove</button>
+              </div>
+            </div>
+          );
+        })
+      )}
+
+      {adding ? (
+        <div>
+          {subLabel(V, 'Card number')}
+          {subInput(V, { value: fmtNum(num), onChange: e => setNum(e.target.value), placeholder: '1234 5678 9012 3456', inputMode: 'numeric', style: { marginBottom: 12 } })}
+          <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+            <div style={{ flex: 1 }}>{subLabel(V, 'Expiry')}{subInput(V, { value: exp, onChange: e => setExp(fmtExp(e.target.value)), placeholder: 'MM/YY', inputMode: 'numeric' })}</div>
+            <div style={{ flex: 1 }}>{subLabel(V, 'Brand')}<div style={{ padding: '12px 14px', border: `1px solid ${V.rule}`, borderRadius: 12, fontSize: 14, color: V.ink }}>{(CARD_BRANDS[brand] || CARD_BRANDS.card).name}</div></div>
+          </div>
+          {subLabel(V, 'Name on card')}
+          {subInput(V, { value: holder, onChange: e => setHolder(e.target.value), placeholder: 'Full name', style: { marginBottom: 14 } })}
+          {err && <div style={{ color: '#b5462e', fontSize: 12, marginBottom: 10 }}>{err}</div>}
+          {subPrimaryBtn(V, 'Save card', addCard, { disabled: !valid || busy, busy })}
+          <button onClick={() => setAdding(false)} className="m-tap" style={{ width: '100%', background: 'transparent', border: 'none', color: V.inkMute, fontSize: 12.5, marginTop: 10, cursor: 'pointer' }}>Cancel</button>
+          <div style={{ fontSize: 10.5, color: V.inkMute, textAlign: 'center', marginTop: 12, lineHeight: 1.5 }}>We only store your card's brand, last 4 digits and expiry — never the full number.</div>
+        </div>
+      ) : (
+        <button onClick={() => setAdding(true)} className="m-tap" style={{
+          width: '100%', background: V.surface, border: `1.5px dashed ${V.accent}80`, borderRadius: 14,
+          padding: '14px', fontSize: 14, fontWeight: 700, color: V.accent, cursor: 'pointer', marginTop: 4,
+        }}>+ Add a card</button>
+      )}
+    </SubScreen>
+  );
+}
+
+function PayoutsScreen({ V, dense, goBack }) {
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const [acct, setAcct] = React.useState({ bank_name: '', account_name: '', iban: '', payout_email: '' });
+  const [busy, setBusy] = React.useState(false); const [saved, setSaved] = React.useState(false);
+  React.useEffect(() => {
+    if (!DB) return;
+    DB.payoutAccount().then(a => {
+      if (a) setAcct({ bank_name: a.bank_name || '', account_name: a.account_name || '', iban: a.iban_last4 ? '•••• ' + a.iban_last4 : '', payout_email: a.payout_email || '' });
+    }).catch(() => {});
+  }, [DB]);
+  const set = (k) => (e) => { const v = e.target.value; setAcct(a => ({ ...a, [k]: v })); setSaved(false); };
+  const save = () => {
+    if (!DB) return; setBusy(true);
+    const ibanDigits = (acct.iban || '').replace(/\D/g, '');
+    DB.savePayoutAccount({ bank_name: acct.bank_name.trim(), account_name: acct.account_name.trim(),
+      iban_last4: ibanDigits ? ibanDigits.slice(-4) : null, payout_email: acct.payout_email.trim() })
+      .then(() => { setSaved(true); }).catch(() => {}).finally(() => setBusy(false));
+  };
+  return (
+    <SubScreen V={V} dense={dense} eyebrow="where you get paid —" title="Payouts & banking" goBack={goBack}>
+      {subCard(V, (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 11, background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 19 }}>💰</div>
+          <div>
+            <div style={{ fontSize: 13.5, color: V.ink, fontWeight: 600 }}>Next payout · May 15</div>
+            <div style={{ fontSize: 11.5, color: V.inkMute, marginTop: 2 }}>Paid out monthly to the account below.</div>
+          </div>
+        </div>
+      ))}
+      {subLabel(V, 'Bank name')}{subInput(V, { value: acct.bank_name, onChange: set('bank_name'), placeholder: 'e.g. CIB', style: { marginBottom: 12 } })}
+      {subLabel(V, 'Account holder name')}{subInput(V, { value: acct.account_name, onChange: set('account_name'), placeholder: 'Full name', style: { marginBottom: 12 } })}
+      {subLabel(V, 'IBAN / account number')}{subInput(V, { value: acct.iban, onChange: set('iban'), placeholder: 'EG__ ____ ____', style: { marginBottom: 12 } })}
+      {subLabel(V, 'Payout email')}{subInput(V, { value: acct.payout_email, onChange: set('payout_email'), placeholder: 'you@email.com', inputMode: 'email', style: { marginBottom: 16 } })}
+      {subPrimaryBtn(V, saved ? 'Saved ✓' : 'Save payout details', save, { busy, disabled: busy })}
+      <div style={{ fontSize: 10.5, color: V.inkMute, textAlign: 'center', marginTop: 12, lineHeight: 1.5 }}>Only the last 4 digits of your IBAN are stored for display.</div>
+    </SubScreen>
+  );
+}
+
+function PurchaseHistoryScreen({ V, dense, goBack }) {
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const [rows, setRows] = React.useState(DB ? null : []);
+  React.useEffect(() => {
+    if (!DB) return;
+    DB.myEnrollments().then(setRows).catch(() => setRows([]));
+  }, [DB]);
+  const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) { return ''; } };
+  const priceOf = (c) => (c && (c.price != null) ? c.price : 0);
+  const total = (rows || []).reduce((s, r) => s + priceOf(r.course || r), 0);
+  return (
+    <SubScreen V={V} dense={dense} eyebrow="what you've joined —" title="Purchase history" goBack={goBack}>
+      {rows === null ? (
+        <div style={{ color: V.inkMute, fontSize: 13, padding: '20px 2px' }}>Loading…</div>
+      ) : rows.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '32px 16px' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🧾</div>
+          <div className="m-serif" style={{ fontSize: 16, marginBottom: 4 }}>Nothing yet</div>
+          <div style={{ fontSize: 12.5, color: V.inkMute }}>Classes you enrol in will show up here.</div>
+        </div>
+      ) : (
+        <React.Fragment>
+          {rows.map((r, i) => {
+            const c = r.course || r; const price = priceOf(c);
+            return (
+              <div key={c.id || i} style={{ background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16,
+                padding: 14, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ width: 38, height: 38, borderRadius: 11, background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{c.emoji || '📚'}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="m-serif" style={{ fontSize: 14, color: V.ink, lineHeight: 1.2 }}>{c.title || 'Class'}</div>
+                  <div style={{ fontSize: 11, color: V.inkMute, marginTop: 2 }}>{fmtDate(r.created_at)}{r.level ? ' · ' + r.level : ''}</div>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: V.ink, flexShrink: 0 }}>{price > 0 ? price.toLocaleString() + ' EGP' : 'Free'}</div>
+              </div>
+            );
+          })}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '12px 6px 0', borderTop: `1px dashed ${V.rule}`, marginTop: 6 }}>
+            <span style={{ fontSize: 12.5, color: V.inkMute, fontWeight: 600 }}>Total spent</span>
+            <span className="m-serif" style={{ fontSize: 18, color: V.ink }}>{total.toLocaleString()} EGP</span>
+          </div>
+        </React.Fragment>
+      )}
+    </SubScreen>
+  );
+}
+
+function PasswordSecurityScreen({ V, dense, goBack, onSignOut }) {
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const [email, setEmail] = React.useState('');
+  const [pw, setPw] = React.useState(''); const [pw2, setPw2] = React.useState('');
+  const [busy, setBusy] = React.useState(false); const [msg, setMsg] = React.useState(null);
+  React.useEffect(() => { if (DB && DB.accountEmail) DB.accountEmail().then(e => setEmail(e || '')).catch(() => {}); }, [DB]);
+  const valid = pw.length >= 8 && pw === pw2;
+  const change = () => {
+    if (!valid || !DB) return; setBusy(true); setMsg(null);
+    DB.changePassword(pw).then(() => { setMsg({ ok: true, text: 'Password updated.' }); setPw(''); setPw2(''); })
+      .catch(e => setMsg({ ok: false, text: e.message || 'Could not update password.' }))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <SubScreen V={V} dense={dense} eyebrow="keep it safe —" title="Password & security" goBack={goBack}>
+      {subCard(V, (
+        <div>
+          <div style={{ fontSize: 10.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: V.inkMute, fontWeight: 700, marginBottom: 4 }}>Signed in as</div>
+          <div style={{ fontSize: 14, color: V.ink }}>{email || '—'}</div>
+        </div>
+      ))}
+      {subLabel(V, 'New password')}
+      {subInput(V, { type: 'password', value: pw, onChange: e => setPw(e.target.value), placeholder: 'At least 8 characters', style: { marginBottom: 12 } })}
+      {subLabel(V, 'Confirm new password')}
+      {subInput(V, { type: 'password', value: pw2, onChange: e => setPw2(e.target.value), placeholder: 'Re-enter password', style: { marginBottom: 8 } })}
+      {pw2 && pw !== pw2 && <div style={{ color: '#b5462e', fontSize: 11.5, marginBottom: 10 }}>Passwords don't match.</div>}
+      {msg && <div style={{ color: msg.ok ? '#1f8a5b' : '#b5462e', fontSize: 12.5, marginBottom: 10, fontWeight: 600 }}>{msg.text}</div>}
+      <div style={{ marginTop: 6 }}>{subPrimaryBtn(V, 'Update password', change, { disabled: !valid || busy, busy })}</div>
+      <button onClick={onSignOut} className="m-tap" style={{ width: '100%', background: 'transparent', border: `1px solid ${V.rule}`, color: '#b5462e', borderRadius: 14, padding: '13px', fontSize: 13.5, fontWeight: 600, marginTop: 12, cursor: 'pointer' }}>Sign out</button>
+    </SubScreen>
+  );
+}
+
+function FamilyScreen({ V, dense, goBack }) {
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const KID_AVATARS = ['🦊','🐻','🦉','🐼','🐸','🦁','🐧','🐱','🦄','🦦','🐢','🐙'];
+  const [kids, setKids] = React.useState(DB ? null : []);
+  const [adding, setAdding] = React.useState(false);
+  const [name, setName] = React.useState(''); const [age, setAge] = React.useState(''); const [av, setAv] = React.useState(KID_AVATARS[0]);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState('');
+  const load = React.useCallback(() => {
+    if (!DB) { setKids([]); return; }
+    DB.familyMembers().then(setKids).catch(() => setKids([]));
+  }, [DB]);
+  React.useEffect(() => { load(); }, [load]);
+
+  const valid = name.trim().length > 0;
+  const add = () => {
+    if (!valid || !DB) return; setBusy(true); setErr('');
+    DB.addFamilyMember({ name: name.trim(), age: age ? parseInt(age, 10) : null, avatar: av })
+      .then(() => { setAdding(false); setName(''); setAge(''); setAv(KID_AVATARS[0]); load(); })
+      .catch((e) => setErr((e && e.message) || 'Could not add child. Make sure sql/family.sql has been run.'))
+      .finally(() => setBusy(false));
+  };
+  const remove = (id) => { if (DB) DB.removeFamilyMember(id).then(load).catch(() => {}); };
+
+  return (
+    <SubScreen V={V} dense={dense} eyebrow="your household —" title="Family & kids" goBack={goBack}>
+      <div style={{ fontSize: 12.5, color: V.inkSoft, lineHeight: 1.5, margin: '0 2px 14px' }}>
+        Add the kids on your account to see their progress and book classes for them. You stay in charge of every enrolment.
+      </div>
+
+      {kids === null ? (
+        <div style={{ color: V.inkMute, fontSize: 13, padding: '20px 2px' }}>Loading…</div>
+      ) : kids.length === 0 && !adding ? (
+        <div style={{ textAlign: 'center', padding: '28px 16px 18px' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>👨‍👧</div>
+          <div className="m-serif" style={{ fontSize: 16, marginBottom: 4 }}>No kids added yet</div>
+          <div style={{ fontSize: 12.5, color: V.inkMute }}>Add a child to start booking classes for them.</div>
+        </div>
+      ) : (
+        kids.map(k => (
+          <div key={k.id} style={{ background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16,
+            padding: 14, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: V.accentBg,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0 }}>{k.avatar || '🧒'}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="m-serif" style={{ fontSize: 14.5, color: V.ink, lineHeight: 1.15 }}>{k.name}</div>
+              <div style={{ fontSize: 11.5, color: V.inkMute, marginTop: 2 }}>{k.age != null ? 'Age ' + k.age + ' · ' : ''}view &amp; book for them</div>
+            </div>
+            <button onClick={() => remove(k.id)} className="m-tap" style={{ background: 'transparent', border: 'none',
+              color: V.inkMute, fontSize: 12, cursor: 'pointer', padding: 4 }}>Remove</button>
+          </div>
+        ))
+      )}
+
+      {adding ? (
+        <div style={{ background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16, padding: 16, marginTop: 4 }}>
+          {subLabel(V, 'Avatar')}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 14 }}>
+            {KID_AVATARS.map(a => (
+              <button key={a} type="button" onClick={() => setAv(a)} className="m-tap" style={{
+                width: 38, height: 38, borderRadius: '50%', fontSize: 20, cursor: 'pointer',
+                background: av === a ? V.accentBg : V.surfaceAlt,
+                border: `1.5px solid ${av === a ? V.accent : 'transparent'}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>{a}</button>
+            ))}
+          </div>
+          {subLabel(V, "Child's name")}
+          {subInput(V, { value: name, onChange: e => setName(e.target.value), placeholder: 'First name', style: { marginBottom: 12 } })}
+          {subLabel(V, 'Age (optional)')}
+          {subInput(V, { value: age, onChange: e => setAge(e.target.value.replace(/\D/g, '').slice(0, 2)), placeholder: 'e.g. 8', inputMode: 'numeric', style: { marginBottom: 14 } })}
+          {err && <div style={{ color: '#b5462e', fontSize: 12, marginBottom: 10, fontWeight: 600 }}>{err}</div>}
+          {subPrimaryBtn(V, 'Add child', add, { disabled: !valid || busy, busy })}
+          <button onClick={() => setAdding(false)} className="m-tap" style={{ width: '100%', background: 'transparent', border: 'none', color: V.inkMute, fontSize: 12.5, marginTop: 10, cursor: 'pointer' }}>Cancel</button>
+        </div>
+      ) : (
+        <button onClick={() => setAdding(true)} className="m-tap" style={{
+          width: '100%', background: V.surface, border: `1.5px dashed ${V.accent}80`, borderRadius: 14,
+          padding: '14px', fontSize: 14, fontWeight: 700, color: V.accent, cursor: 'pointer', marginTop: 4,
+        }}>+ Add a child</button>
+      )}
+    </SubScreen>
+  );
+}
+
+function ContentScreen({ V, dense, goBack, eyebrow, title, sections }) {
+  return (
+    <SubScreen V={V} dense={dense} eyebrow={eyebrow} title={title} goBack={goBack}>
+      {sections.map((s, i) => (
+        <div key={i} style={{ marginBottom: 20 }}>
+          {s.h && <div className="m-serif" style={{ fontSize: 15.5, color: V.ink, marginBottom: 7, fontWeight: V.polaroid ? 500 : 400 }}>{s.h}</div>}
+          {s.p.map((para, j) => (
+            <p key={j} style={{ fontSize: 13, color: V.inkSoft, lineHeight: 1.6, margin: '0 0 9px', textWrap: 'pretty' }}>{para}</p>
+          ))}
+        </div>
+      ))}
+      <div className="m-hand" style={{ textAlign: 'center', color: V.inkMute, fontSize: 14, marginTop: 4 }}>— El Gouna, together —</div>
+    </SubScreen>
+  );
+}
+const HELP_SECTIONS = [
+  { h: 'We keep things human', p: ["Mentora is for the El Gouna community — residents, owners and their families. Everyone here is a neighbour, so treat each other with the warmth you would in person."] },
+  { h: 'Be a good neighbour', p: ["Show up on time for classes you book, and let your mentor know early if plans change.", "Keep conversations kind and on-topic. Harassment, spam, or selling unrelated goods isn't welcome."] },
+  { h: 'Teaching here', p: ["Describe your class honestly — what people will learn, where, and what to bring. Price fairly for the community."] },
+  { h: 'Need a hand?', p: ["Something not working, or someone not playing nice? Reach the town team at hello@mentora.elgouna and we'll help."] },
+];
+const TERMS_SECTIONS = [
+  { h: 'Who can use Mentora', p: ["Mentora is offered exclusively to verified members of the El Gouna community. Your unit, zone and residency are used only to confirm you belong here."] },
+  { h: 'Your account', p: ["You're responsible for what happens under your account. Keep your password private and tell us if you suspect someone else has access."] },
+  { h: 'Bookings & payments', p: ["Classes are arranged directly between neighbours. Prices are set by mentors. Payment card details shown in the app store only the brand, last 4 digits and expiry."] },
+  { h: 'Your privacy', p: ["We keep your town-record details confidential and never sell your data. Community profile info (name, avatar, and a mentor's bio) is visible to other members."] },
+  { h: 'Changes', p: ["We may update these terms as Mentora grows; we'll flag meaningful changes in the app."] },
+];
 
 function SettingsGroupHead({ V, pad, children }) {
   return (
@@ -7695,6 +8326,21 @@ function LoginScreen({ V, dense, os, onLogin, goBack, busy }) {
   const [showPw, setShowPw] = useState(false);
   const [focus, setFocus] = useState(null);
   const [err, setErr] = useState('');
+  const [resetMsg, setResetMsg] = useState(null);
+  const [resetBusy, setResetBusy] = useState(false);
+
+  const forgot = () => {
+    setErr(''); setResetMsg(null);
+    const e = email.trim();
+    if (!e || !/^[^@]+@[^@]+\.[^@]+$/.test(e)) { setErr('Enter your email above first, then tap “Forgot password”.'); return; }
+    const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+    if (!DB || !DB.resetPassword) { setResetMsg({ ok: true, text: 'Check your email for a reset link.' }); return; }
+    setResetBusy(true);
+    DB.resetPassword(e)
+      .then(() => setResetMsg({ ok: true, text: 'Reset link sent to ' + e + ' — check your inbox.' }))
+      .catch(er => setResetMsg({ ok: false, text: er.message || 'Could not send reset email.' }))
+      .finally(() => setResetBusy(false));
+  };
 
   const submit = () => {
     setErr('');
@@ -7773,6 +8419,17 @@ function LoginScreen({ V, dense, os, onLogin, goBack, busy }) {
             </div>
           </label>
 
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: -4 }}>
+            <button type="button" onClick={forgot} disabled={resetBusy} className="m-tap" style={{
+              background: 'transparent', border: 'none', color: V.accent, fontSize: 12.5,
+              fontWeight: 600, cursor: 'pointer', padding: '2px 0',
+            }}>{resetBusy ? 'Sending…' : 'Forgot password?'}</button>
+          </div>
+          {resetMsg && (
+            <div style={{ fontSize: 12.5, color: resetMsg.ok ? '#1f8a5b' : '#b5462e',
+              fontWeight: 600, padding: '2px 2px' }}>{resetMsg.text}</div>
+          )}
+
           {err && (
             <div style={{ fontSize: 12.5, color: '#fff', background: V.accent,
               padding: '9px 12px', borderRadius: 10, fontWeight: 500 }}>
@@ -7827,7 +8484,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
   const [accountType, setAccountType] = useState('sole');
   // Profile photo / avatar
   const AVATARS = AVATAR_SET;
-  const [photoMode, setPhotoMode] = useState(null);   // null | 'photo' | 'avatar'
+  const [photoMode, setPhotoMode] = useState('avatar');   // 'avatar' (default — wheel shown) | 'photo'
   const [photoSrc, setPhotoSrc] = useState(null);      // dataURL when a photo is chosen
   const [avatarIdx, setAvatarIdx] = useState(0);
   const fileRef = React.useRef(null);
@@ -7838,9 +8495,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
     reader.onload = () => { setPhotoSrc(reader.result); setPhotoMode('photo'); };
     reader.readAsDataURL(file);
   };
-  const [kids, setKids] = useState([
-    { id: 'k1', name: 'Yara', age: 9 },
-  ]);
+  const [kids, setKids] = useState([]);
   const pad = dense ? 22 : 28;
   const isTeacher = role === 'teacher';
 
@@ -7935,59 +8590,48 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
         {/* Profile photo / avatar picker */}
         <BlurFade delay={0.12} duration={0.5} yOffset={6}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-            {/* Preview circle — or the scroll-wheel when choosing an avatar */}
-            {photoMode === 'avatar' ? (
-              <AvatarWheel avatars={AVATARS} value={AVATARS[avatarIdx]} onChange={(a) => setAvatarIdx(AVATARS.indexOf(a))} V={V} big={92} />
-            ) : (
-            <div style={{
-              width: 92, height: 92, borderRadius: '50%',
-              background: photoMode === 'avatar' ? V.accentBg : V.surfaceAlt,
-              border: `2px solid ${V.rule}`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              overflow: 'hidden', position: 'relative',
-            }}>
-              {photoMode === 'photo' && photoSrc ? (
-                <img src={photoSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : (
-                <span style={{ color: V.inkMute }}>{Icon.user(34, V.inkMute)}</span>
-              )}
-            </div>
-            )}
-            {/* Hidden file input — tapping "Upload photo" prompts OS photo access */}
+            {/* Hidden file input — tapping "upload a photo" prompts OS photo access */}
             <input ref={fileRef} type="file" accept="image/*"
                    onChange={onPickFile} style={{ display: 'none' }} />
-            {/* Two options */}
-            <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-              <button type="button" onClick={() => fileRef.current && fileRef.current.click()}
-                className="m-tap" style={{
-                  flex: 1, padding: '10px 0', borderRadius: 12,
-                  background: photoMode === 'photo' ? V.accent : V.surface,
-                  color: photoMode === 'photo' ? '#fff' : V.ink,
-                  border: `1px solid ${photoMode === 'photo' ? V.accent : V.rule}`,
-                  fontSize: 12.5, fontWeight: 600,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            {photoMode === 'photo' && photoSrc ? (
+              <React.Fragment>
+                <div style={{
+                  width: 92, height: 92, borderRadius: '50%', overflow: 'hidden',
+                  border: `2px solid ${V.rule}`,
                 }}>
-                <span style={{ fontSize: 15 }}>📷</span> Upload photo
-              </button>
-              <button type="button"
-                onClick={() => setPhotoMode(m => m === 'avatar' ? null : 'avatar')}
-                className="m-tap" style={{
-                  flex: 1, padding: '10px 0', borderRadius: 12,
-                  background: photoMode === 'avatar' ? V.accent : V.surface,
-                  color: photoMode === 'avatar' ? '#fff' : V.ink,
-                  border: `1px solid ${photoMode === 'avatar' ? V.accent : V.rule}`,
-                  fontSize: 12.5, fontWeight: 600,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                }}>
-                <span style={{ fontSize: 15 }}>🐾</span> Pick avatar
-              </button>
-            </div>
-            {/* Avatar grid (only when choosing avatar) */}
-            <div style={{ fontSize: 11, color: V.inkMute, textAlign: 'center' }}>
-              {photoMode === 'photo' ? 'Looking good!'
-                : photoMode === 'avatar' ? 'Swipe to find one that feels like you.'
-                : 'Add a profile photo or choose an avatar.'}
-            </div>
+                  <img src={photoSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+                <button type="button" onClick={() => { setPhotoSrc(null); setPhotoMode('avatar'); }}
+                  className="m-tap" style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
+                    background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 100,
+                    padding: '9px 18px', fontSize: 12.5, fontWeight: 600, color: V.ink, cursor: 'pointer',
+                  }}>
+                  <span style={{ fontSize: 14 }}>🐾</span> Choose an avatar
+                </button>
+              </React.Fragment>
+            ) : (
+              <React.Fragment>
+                <div style={{
+                  fontSize: 10.5, letterSpacing: '0.12em', textTransform: 'uppercase',
+                  color: V.inkMute, fontWeight: 700,
+                }}>Pick your avatar</div>
+                <AvatarWheel avatars={AVATARS} value={AVATARS[avatarIdx]} onChange={(a) => setAvatarIdx(AVATARS.indexOf(a))} V={V} big={92} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, width: 150, margin: '3px 0 1px' }}>
+                  <div style={{ flex: 1, height: 1, background: V.rule }} />
+                  <span style={{ fontSize: 10.5, color: V.inkMute, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>or</span>
+                  <div style={{ flex: 1, height: 1, background: V.rule }} />
+                </div>
+                <button type="button" onClick={() => fileRef.current && fileRef.current.click()}
+                  className="m-tap" style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
+                    background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 100,
+                    padding: '9px 18px', fontSize: 12.5, fontWeight: 600, color: V.ink, cursor: 'pointer',
+                  }}>
+                  <span style={{ fontSize: 14 }}>📷</span> Upload a photo
+                </button>
+              </React.Fragment>
+            )}
           </div>
         </BlurFade>
         <BlurFade delay={0.18} duration={0.5} yOffset={6}>
@@ -8191,82 +8835,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
             })}
           </div>
 
-          {/* Family-only: connect kids panel */}
-          {accountType === 'family' && (
-            <div className="m-fade" style={{
-              marginTop: 12,
-              background: V.accentBg, border: `1px solid ${V.accentSoft}`,
-              borderRadius: 14, padding: dense ? 12 : 14,
-            }}>
-              <div style={{
-                display: 'flex', alignItems: 'flex-start', gap: 10,
-                marginBottom: 10,
-              }}>
-                <div style={{
-                  width: 28, height: 28, borderRadius: 8,
-                  background: V.accent, color: '#fffaf0',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 14, flexShrink: 0,
-                }}>👨‍👧</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="m-serif" style={{
-                    fontSize: 13.5, color: V.ink, lineHeight: 1.15,
-                    fontWeight: V.polaroid ? 500 : 400,
-                  }}>Connect your kids</div>
-                  <div style={{ fontSize: 11, color: V.inkSoft, marginTop: 2, lineHeight: 1.45 }}>
-                    Book classes for them, see their progress, approve enrolments. You stay in charge.
-                  </div>
-                </div>
-              </div>
 
-              {/* Kids list */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {kids.map(k => (
-                  <div key={k.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '8px 10px', background: V.surface,
-                    border: `1px solid ${V.rule}`, borderRadius: 10,
-                  }}>
-                    <div style={{
-                      width: 30, height: 30, borderRadius: '50%',
-                      background: V.surfaceAlt, color: V.ink,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 12, fontWeight: 700, flexShrink: 0,
-                    }}>{k.name[0]}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="m-serif" style={{ fontSize: 13, color: V.ink, lineHeight: 1.1 }}>
-                        {k.name}
-                      </div>
-                      <div style={{ fontSize: 10.5, color: V.inkMute, marginTop: 1 }}>
-                        Age {k.age} · view & book for them
-                      </div>
-                    </div>
-                    <button type="button"
-                      onClick={() => setKids(ks => ks.filter(x => x.id !== k.id))}
-                      style={{
-                        background: 'transparent', border: 'none',
-                        color: V.inkMute, fontSize: 16, cursor: 'pointer', padding: 0,
-                      }}>×</button>
-                  </div>
-                ))}
-                <button type="button" className="m-tap"
-                  onClick={() => setKids(ks => [...ks,
-                    { id: 'k' + (ks.length + 1), name: 'Child', age: 8 }])}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-                    padding: '9px 0',
-                    background: 'transparent', color: V.ink,
-                    border: `1.5px dashed ${V.accent}55`,
-                    borderRadius: 10, fontSize: 12.5, fontWeight: 600,
-                  }}>
-                  + Add a child
-                </button>
-              </div>
-              <div className="m-hand" style={{
-                marginTop: 10, fontSize: 12.5, color: V.inkMute, textAlign: 'center',
-              }}>— you can add or remove kids anytime —</div>
-            </div>
-          )}
           </div>
         </BlurFade>
 
@@ -8876,17 +9445,37 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll
 // ─────────────────────────────────────────────────────────
 // NOTIFICATIONS — grouped feed, role-aware
 // ─────────────────────────────────────────────────────────
-function NotificationsScreen({ V, dense, role, goBack, openChat }) {
+function NotificationsScreen({ V, dense, role, goBack, openChat, openLiveChat }) {
   const pad = dense ? 14 : 18;
-  const list = NOTIFICATIONS[role === 'teacher' ? 'teacher' : 'learner'];
-  const [items, setItems] = useState(list);
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const demo = NOTIFICATIONS[role === 'teacher' ? 'teacher' : 'learner'];
+  // Live feed (self-populated by DB triggers) when signed in; demo list otherwise.
+  // null = still loading the live feed.
+  const [items, setItems] = useState(DB ? null : demo);
+  React.useEffect(() => {
+    if (!DB) return;
+    let alive = true;
+    DB.notifications()
+      .then(rows => { if (alive) setItems(rows); })
+      .catch(() => { if (alive) setItems([]); });
+    return () => { alive = false; };
+  }, []);
+  const loading = items === null;
+  const empty = !loading && items.length === 0;
   const groups = [];
-  items.forEach(n => {
+  (items || []).forEach(n => {
     let g = groups.find(x => x.name === n.group);
     if (!g) { g = { name: n.group, rows: [] }; groups.push(g); }
     g.rows.push(n);
   });
-  const markAllRead = () => setItems(items.map(n => ({ ...n, unread: false })));
+  const markAllRead = () => {
+    setItems((items || []).map(n => ({ ...n, unread: false })));
+    if (DB) DB.markAllNotificationsRead().catch(() => {});
+  };
+  const onRow = (n) => {
+    if (n.threadWith && openLiveChat) return openLiveChat(n.threadWith);
+    if (n.threadId) return openChat(n.threadId);
+  };
 
   return (
     <div className="m-fade" style={{ paddingBottom: 40, fontFamily: V.fontSans, color: V.ink }}>
@@ -8920,7 +9509,29 @@ function NotificationsScreen({ V, dense, role, goBack, openChat }) {
 
       {/* Groups */}
       <div style={{ padding: `0 ${pad}px` }}>
-        {groups.map(g => (
+        {loading && [0,1,2].map(i => (
+          <div key={'sk'+i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12,
+            background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16,
+            padding: dense ? 12 : 14, marginBottom: 8 }}>
+            <div className="m-skel" style={{ width: 38, height: 38, borderRadius: 11, background: V.surfaceAlt, flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div className="m-skel" style={{ width: '55%', height: 11, borderRadius: 6, background: V.surfaceAlt }} />
+              <div className="m-skel" style={{ width: '90%', height: 9, borderRadius: 6, background: V.surfaceAlt, marginTop: 8 }} />
+            </div>
+          </div>
+        ))}
+        {empty && (
+          <div style={{ textAlign: 'center', padding: '48px 20px 24px' }}>
+            <div style={{ fontSize: 34, marginBottom: 10 }}>{'\uD83E\uDEB4'}</div>
+            <div className="m-serif" style={{ fontSize: 16, color: V.ink, marginBottom: 4 }}>No notifications yet</div>
+            <div style={{ fontSize: 12.5, color: V.inkMute, lineHeight: 1.5 }}>
+              {role === 'teacher'
+                ? 'New enrolments, reviews and messages from your neighbours will land here.'
+                : 'Class reminders, replies and updates from the community will show up here.'}
+            </div>
+          </div>
+        )}
+        {!loading && !empty && groups.map(g => (
           <div key={g.name} style={{ marginBottom: dense ? 18 : 22 }}>
             <div style={{
               fontSize: 10.5, letterSpacing: '0.14em', textTransform: 'uppercase',
@@ -8929,7 +9540,7 @@ function NotificationsScreen({ V, dense, role, goBack, openChat }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {g.rows.map(n => (
                 <button key={n.id}
-                  onClick={() => n.threadId ? openChat(n.threadId) : null}
+                  onClick={() => onRow(n)}
                   className="m-tap" style={{
                     width: '100%', textAlign: 'left',
                     display: 'flex', alignItems: 'flex-start', gap: 12,
@@ -8982,9 +9593,11 @@ function NotificationsScreen({ V, dense, role, goBack, openChat }) {
         ))}
       </div>
 
-      <div className="m-hand" style={{
-        textAlign: 'center', marginTop: 6, color: V.inkMute, fontSize: 15,
-      }}>— you're all caught up —</div>
+      {!loading && !empty && (
+        <div className="m-hand" style={{
+          textAlign: 'center', marginTop: 6, color: V.inkMute, fontSize: 15,
+        }}>— you're all caught up —</div>
+      )}
     </div>
   );
 }
@@ -9047,7 +9660,11 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
   const [emojiPop, setEmojiPop] = React.useState(1);
   React.useEffect(() => {
     if (!DB) return;
-    DB.conversations().then(list => { CONVO_CACHE = list; setConvos(list); }).catch(() => setConvos([]));
+    const reload = () => DB.conversations().then(list => { CONVO_CACHE = list; setConvos(list); }).catch(() => setConvos([]));
+    reload();
+    // Live: refresh the list when any message involving me lands.
+    const unsub = DB.subscribeRealtime ? DB.subscribeRealtime({ onMessage: reload }) : null;
+    return () => { if (unsub) unsub(); };
   }, []);
   const prefOf = (id) => prefs[id] || {};
   const setPrefFor = (id, patch) => savePrefs({ ...prefs, [id]: { ...prefOf(id), ...patch } });
@@ -9613,8 +10230,10 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
     const load = () => DB.messagesWith(liveTargetId).then(rows => { if (alive) { THREAD_CACHE[liveTargetId] = rows; setMsgs(rows); } }).catch(() => {});
     load();
     DB.markRead(liveTargetId).catch(() => {});
+    // Live: refresh this thread when a new message to/from me arrives.
+    const unsub = DB.subscribeRealtime ? DB.subscribeRealtime({ onMessage: () => { load(); DB.markRead(liveTargetId).catch(() => {}); } }) : null;
     const iv = setInterval(load, 4000); // light polling for new replies
-    return () => { alive = false; clearInterval(iv); };
+    return () => { alive = false; clearInterval(iv); if (unsub) unsub(); };
   }, [isLiveChat, liveTargetId]);
   const send = () => {
     if (!draft.trim()) return;
@@ -10065,10 +10684,33 @@ function MentoraApp({ variant, os, density, scope,
   // Keep the nav unread badge in sync: on first load and whenever we leave
   // the messages/chat surfaces (so reading a thread clears the count).
   React.useEffect(() => { refreshUnread(); }, [refreshUnread, screen]);
+  // Live unread notification count for the bell dot.
+  const [notifUnread, setNotifUnread] = useState(0);
+  const refreshNotifUnread = React.useCallback(() => {
+    const db = (typeof window !== 'undefined') && window.MENTORA_DB;
+    if (!db || !db.unreadNotifications) { setNotifUnread(0); return; }
+    db.unreadNotifications().then(setNotifUnread).catch(() => setNotifUnread(0));
+  }, []);
+  // Refresh on load and whenever the screen changes (the feed marks itself read
+  // on open, so leaving it clears the dot).
+  React.useEffect(() => { refreshNotifUnread(); }, [refreshNotifUnread, screen]);
   const openConversation = (convo) => { setActiveOther(convo); setNewChatMentorId(null); setActiveThreadId('conv'); setScreen('chat'); };
   const [returnTab, setReturnTab] = useState('home');
   const [profile, setProfile] = useState(null);
   const [authBusy, setAuthBusy] = useState(false);
+  // Live updates: re-pull the bell + message counts when the backend pushes a
+  // change, so the UI stays current without a manual refresh. (Declared after
+  // `profile` so the dependency is the real state, not a hoisted undefined.)
+  React.useEffect(() => {
+    const db = (typeof window !== 'undefined') && window.MENTORA_DB;
+    if (!db || !db.subscribeRealtime || !profile) return;
+    const unsub = db.subscribeRealtime({
+      onNotif: () => refreshNotifUnread(),
+      onMessage: () => { refreshUnread(); refreshNotifUnread(); },
+    });
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile]);
 
   // ── Live Supabase auth (deployed build only; demo stays unchanged) ──
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
@@ -10097,7 +10739,7 @@ function MentoraApp({ variant, os, density, scope,
     if (DB && DB.updateProfile) {
       const avatarUrl = patch.photoMode === 'photo' ? (patch.photoSrc || null)
                       : (patch.avatar !== undefined ? (patch.avatar || null) : undefined);
-      DB.updateProfile({ name: patch.name, avatarUrl: avatarUrl, bio: patch.bio, craft: patch.craft }).catch(() => {});
+      DB.updateProfile({ name: patch.name, avatarUrl: avatarUrl, bio: patch.bio, craft: patch.craft, accountType: patch.accountType }).catch(() => {});
     }
   };
   // Called by Register submit — real account + profile when connected, else demo.
@@ -10105,7 +10747,13 @@ function MentoraApp({ variant, os, density, scope,
     if (DB && p.email && p.password) {
       setAuthBusy(true);
       DB.signUp(p.email, p.password, p)
-        .then(() => { setProfile(p); setScreen('home'); })
+        .then(() => {
+          setProfile(p); setScreen('home');
+          // Persist any kids added during a family-account signup.
+          if (p.accountType === 'family' && Array.isArray(p.kids) && DB.addFamilyMember) {
+            p.kids.forEach(k => { if (k && k.name) DB.addFamilyMember({ name: k.name, age: k.age != null ? k.age : null, avatar: k.avatar }).catch(() => {}); });
+          }
+        })
         .catch(err => { alert(err.message || 'Sign-up failed'); })
         .finally(() => setAuthBusy(false));
     } else {
@@ -10202,6 +10850,7 @@ function MentoraApp({ variant, os, density, scope,
     if (screen === 'booking')  return setScreen('mentor');
     if (screen === 'mentor')   return setScreen('home');
     if (screen === 'editProfile') return setScreen('settings');
+    if (screen === 'payment' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family') return setScreen('settings');
     if (screen === 'register') return setScreen('role');
     if (screen === 'role')     return setScreen('landing');
     if (screen === 'landing')  return setScreen('welcome');
@@ -10222,11 +10871,11 @@ function MentoraApp({ variant, os, density, scope,
   };
 
   const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
-  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat' || screen === 'createCourse' || screen === 'editProfile'; // these have their own bottom bars
+  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat' || screen === 'createCourse' || screen === 'editProfile' || screen === 'payment' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family'; // these have their own bottom bars
   // Which tab reads as active (messages screen lights the Messages tab;
   // settings screen lights the Profile tab).
   const activeTab = screen === 'messages' ? 'messages'
-                  : (screen === 'settings' || screen === 'editProfile') ? 'profile'
+                  : (screen === 'settings' || screen === 'editProfile' || screen === 'payment' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family') ? 'profile'
                   : screen;
   const userPhoto = 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?q=80&w=200&auto=format&fit=crop';
   // Tab-bar avatar reflects the chosen profile: an uploaded photo, the chosen
@@ -10288,6 +10937,7 @@ function MentoraApp({ variant, os, density, scope,
                                 profile={profile}
                                 openReviews={openReviews}
                                 openNotifications={openNotifications}
+                                notifUnread={notifUnread}
                                 openMessages={openMessages}
                                 myLiveCourses={liveCoursesMine}
                                 openCreateCourse={() => setScreen('createCourse')} />
@@ -10300,6 +10950,7 @@ function MentoraApp({ variant, os, density, scope,
                       openExplore={() => setScreen('explore')}
                       openReviews={openReviews}
                       openNotifications={openNotifications}
+                      notifUnread={notifUnread}
                       openMessages={openMessages}
                       liveCourses={liveCourses}
                       enrollments={liveEnrollments}
@@ -10338,8 +10989,16 @@ function MentoraApp({ variant, os, density, scope,
           <SettingsScreen V={V} dense={dense} role={role}
                           profile={profile}
                           onEditProfile={() => setScreen('editProfile')}
+                          openSub={(s) => setScreen(s)}
                           onSignOut={handleSignOut} />
         )}
+        {screen === 'payment' && (<PaymentMethodsScreen V={V} dense={dense} goBack={goBack} />)}
+        {screen === 'payouts' && (<PayoutsScreen V={V} dense={dense} goBack={goBack} />)}
+        {screen === 'purchases' && (<PurchaseHistoryScreen V={V} dense={dense} goBack={goBack} />)}
+        {screen === 'password' && (<PasswordSecurityScreen V={V} dense={dense} goBack={goBack} onSignOut={handleSignOut} />)}
+        {screen === 'help' && (<ContentScreen V={V} dense={dense} goBack={goBack} eyebrow="good neighbours —" title="Help & community guidelines" sections={HELP_SECTIONS} />)}
+        {screen === 'family' && (<FamilyScreen V={V} dense={dense} goBack={goBack} />)}
+        {screen === 'terms' && (<ContentScreen V={V} dense={dense} goBack={goBack} eyebrow="the fine print —" title="Terms & privacy" sections={TERMS_SECTIONS} />)}
         {screen === 'editProfile' && (
           <EditProfileScreen V={V} dense={dense} role={role}
                              profile={profile}
@@ -10356,7 +11015,7 @@ function MentoraApp({ variant, os, density, scope,
         )}
         {screen === 'notifications' && (
           <NotificationsScreen V={V} dense={dense} role={role}
-                               goBack={goBack} openChat={openChat} />
+                               goBack={goBack} openChat={openChat} openLiveChat={openNewChat} />
         )}
         {screen === 'messages' && (
           <ChatListScreen V={V} dense={dense} role={role}
