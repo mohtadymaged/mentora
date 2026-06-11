@@ -15,6 +15,7 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
 <script>
 // Mentora — Supabase connection config (public anon key; safe for front-end).
 // Used by the deployed full-screen build to enable real auth + profiles.
@@ -113,7 +114,38 @@ window.MENTORA_SUPABASE = {
               : (data.avatar_url && data.avatar_url.length <= 8 ? data.avatar_url : null),
         photoMode: data.avatar_url && data.avatar_url.startsWith("data:") ? "photo" : null,
         photoSrc: data.avatar_url && data.avatar_url.startsWith("data:") ? data.avatar_url : null,
+        // El Gouna town-record fields established at registration.
+        unit: data.unit_number || null,
+        zone: data.zone || null,
+        residency: data.residency || null,
+        accountType: data.account_type || null,
+        // `bio` / `craft` columns are optional in the schema — read defensively.
+        bio: data.bio || "",
+        craft: data.craft || "",
       };
+    },
+
+    // Update the signed-in user's editable profile fields. Tolerant of
+    // optional columns (bio / craft): if the write fails on them, retries
+    // with only the always-present columns (the app keeps the rest in
+    // localStorage as a fallback).
+    async updateProfile(fields) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return { ok: false };
+      const hard = {}; // columns guaranteed by the schema
+      if (fields.name !== undefined)      hard.full_name = fields.name;
+      if (fields.avatarUrl !== undefined) hard.avatar_url = fields.avatarUrl;
+      if (fields.unit !== undefined)      hard.unit_number = fields.unit;
+      if (fields.zone !== undefined)      hard.zone = fields.zone;
+      const soft = {}; // columns that may not exist
+      if (fields.bio !== undefined)   soft.bio = fields.bio;
+      if (fields.craft !== undefined) soft.craft = fields.craft;
+      let res = await sb.from("profiles").update(Object.assign({}, hard, soft)).eq("id", session.user.id);
+      if (res.error && Object.keys(soft).length) {
+        res = await sb.from("profiles").update(hard).eq("id", session.user.id); // retry without optional cols
+      }
+      if (res.error) { console.warn("[Mentora] updateProfile:", res.error.message); return { ok: false, error: res.error }; }
+      return { ok: true };
     },
 
     // Live courses (Stage 2). All published courses, newest first.
@@ -2185,10 +2217,64 @@ if (typeof document !== 'undefined' && !document.getElementById('m-wave-global-s
     0%,100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.35; transform: scale(0.82); }
   }
+  @keyframes m-skel {
+    0%,100% { opacity: 0.45; }
+    50% { opacity: 0.85; }
+  }
+  @keyframes m-spin {
+    to { transform: rotate(360deg); }
+  }
   @keyframes m-followpop {
     0% { transform: scale(0.6); opacity: 0; }
     60% { transform: scale(1.12); opacity: 1; }
     100% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes m-av-wiggle {
+    0%,100% { transform: rotate(0deg) scale(1); }
+    20% { transform: rotate(-9deg) scale(1.12); }
+    45% { transform: rotate(7deg) scale(1.12); }
+    70% { transform: rotate(-4deg) scale(1.06); }
+    85% { transform: rotate(2deg) scale(1.03); }
+  }
+  .m-av-hover { transition: transform 0.25s cubic-bezier(.34,1.56,.64,1); }
+  .m-av-hover:hover { transform: scale(1.09); }
+  /* ── Per-animal "alive" idle motions — each creature moves in character ── */
+  .m-alive { display: inline-block; will-change: transform; }
+  /* One-shot face motion: plays a single time, never loops. The specific
+     animal keyframe is supplied per-element via the --face-anim variable. */
+  .m-face { display: inline-block; will-change: transform; transform-origin: center; }
+  .m-face-play { animation: var(--face-anim) var(--face-dur, 1.6s) ease-in-out 1 both; }
+  .m-av-hover:hover .m-face { animation: var(--face-anim) var(--face-dur, 1.6s) ease-in-out 1 both; }
+  @keyframes m-a-fox { 0% { transform: scaleY(1); } 15% { transform: scaleY(0.16); } 27% { transform: scaleY(1); } 43% { transform: scaleY(0.16); } 55%,100% { transform: scaleY(1); } }
+  .m-a-fox { animation: m-a-fox 3.6s ease-in-out infinite; transform-origin: center 58%; }
+  @keyframes m-a-butterfly { 0%,100% { transform: translateY(0) scaleX(1); } 25% { transform: translateY(-2px) scaleX(0.5); } 50% { transform: translateY(0) scaleX(1); } 75% { transform: translateY(-2px) scaleX(0.5); } }
+  .m-a-butterfly { animation: m-a-butterfly 0.9s ease-in-out infinite; }
+  @keyframes m-a-owl { 0%,100% { transform: rotate(0) translateY(0); } 20% { transform: rotate(-13deg) translateY(-1px); } 40% { transform: rotate(11deg) translateY(-3px); } 60% { transform: rotate(-9deg) translateY(-1px); } 80% { transform: rotate(7deg) translateY(-2px); } }
+  .m-a-owl { animation: m-a-owl 2s ease-in-out infinite; transform-origin: bottom center; }
+  @keyframes m-a-frog { 0%,62%,100% { transform: translateY(0) scale(1,1); } 12% { transform: translateY(0) scale(1.18,0.8); } 30% { transform: translateY(-11px) scale(0.88,1.18); } 50% { transform: translateY(0) scale(1.12,0.88); } }
+  .m-a-frog { animation: m-a-frog 2.6s cubic-bezier(.4,0,.5,1) infinite; transform-origin: bottom center; }
+  @keyframes m-a-bear { 0%,100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+  .m-a-bear { animation: m-a-bear 3s ease-in-out infinite; transform-origin: bottom center; }
+  @keyframes m-a-lion { 0%,60%,100% { transform: rotate(0) scale(1); } 15% { transform: rotate(-8deg); } 30% { transform: rotate(8deg); } 45% { transform: rotate(-5deg) scale(1.07); } }
+  .m-a-lion { animation: m-a-lion 3.4s ease-in-out infinite; }
+  @keyframes m-a-octopus { 0%,100% { transform: translateY(0) skewX(0); } 25% { transform: translateY(-3px) skewX(7deg); } 50% { transform: translateY(0) skewX(0); } 75% { transform: translateY(-3px) skewX(-7deg); } }
+  .m-a-octopus { animation: m-a-octopus 2.3s ease-in-out infinite; }
+  @keyframes m-a-penguin { 0%,100% { transform: rotate(-9deg); } 50% { transform: rotate(9deg); } }
+  .m-a-penguin { animation: m-a-penguin 1.3s ease-in-out infinite; transform-origin: bottom center; }
+  @keyframes m-a-tiger { 0%,8%,100% { transform: scale(1) translateY(0); } 26% { transform: scale(1.14,0.82) translateY(5px); } 46% { transform: scale(0.88,1.2) translateY(-8px); } 62% { transform: scale(1.06,0.95) translateY(0); } 74% { transform: scale(1) translateY(0); } }
+  .m-a-tiger { animation: m-a-tiger 3s ease-in-out infinite; transform-origin: bottom center; }
+  @keyframes m-a-koala { 0%,100% { transform: scale(1) rotate(-2deg); } 50% { transform: scale(1.07) rotate(2deg); } }
+  .m-a-koala { animation: m-a-koala 3.6s ease-in-out infinite; }
+  @keyframes m-a-panda { 0%,100% { transform: rotate(0) translateY(0); } 25% { transform: rotate(-7deg) translateY(-2px); } 75% { transform: rotate(7deg) translateY(-2px); } }
+  .m-a-panda { animation: m-a-panda 2.6s ease-in-out infinite; transform-origin: bottom center; }
+  @keyframes m-a-monkey { 0%,100% { transform: translateY(0) rotate(0); } 20% { transform: translateY(-6px) rotate(-9deg); } 40% { transform: translateY(0) rotate(7deg); } 60% { transform: translateY(-4px) rotate(-4deg); } }
+  .m-a-monkey { animation: m-a-monkey 1.9s ease-in-out infinite; transform-origin: bottom center; }
+  @keyframes m-a-anon { 0%,100% { transform: rotate(0) translateX(0); } 30% { transform: rotate(-9deg) translateX(-1px); } 60% { transform: rotate(7deg) translateX(1px); } }
+  .m-a-anon { animation: m-a-anon 3s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .m-alive, .m-face, .m-face-play { animation: none !important; }
+    .m-av-hover:hover .m-face { animation: none !important; }
+    .m-av-hover:hover { transform: scale(1.06); }
   }`;
   document.head.appendChild(s);
 }
@@ -2219,6 +2305,12 @@ function VariantCSS({ variantKey, scope }) {
       @keyframes m-fade-${scope} {
         from { opacity: 0; transform: translateY(14px) scale(0.985); }
         to   { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      [data-mvar="${scope}"] .m-wheel-in { animation: m-wheel-in-${scope} 0.46s cubic-bezier(.2,.9,.3,1) both; transform-origin: center; }
+      @keyframes m-wheel-in-${scope} {
+        from { opacity: 0; transform: scale(0.82); }
+        60%  { opacity: 1; }
+        to   { opacity: 1; transform: scale(1); }
       }
       [data-mvar="${scope}"] .m-tap { transition: transform .14s cubic-bezier(.2,.7,.2,1), box-shadow .2s ease, background .15s ease; }
       [data-mvar="${scope}"] .m-num { font-family: 'Fredoka', 'Space Grotesk', 'Inter', sans-serif; font-weight: 600; letter-spacing: 0; }
@@ -2762,7 +2854,318 @@ function SessionDots({ V, sessions, done = 0, size = 10, color, gap = 4, max = 1
 // ─────────────────────────────────────────────────────────
 // HOME SCREEN — returning learner
 // ─────────────────────────────────────────────────────────
-function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, openMessages, openProfile, profile, liveCourses, enrollments }) {
+// Fallback identity when a member chose neither a photo nor an emoji avatar:
+// a friendly "incognito" face — never a stock stranger's photo.
+const ANON_AVATAR = '🥸';
+// Each animal avatar gets its own in-character idle motion (see CSS .m-a-*).
+const AVATAR_ANIM = {
+  '🦊':'m-a-fox','🐻':'m-a-bear','🦉':'m-a-owl','🐼':'m-a-panda','🐸':'m-a-frog',
+  '🦁':'m-a-lion','🐙':'m-a-octopus','🦋':'m-a-butterfly','🐧':'m-a-penguin',
+  '🐯':'m-a-tiger','🐨':'m-a-koala','🐵':'m-a-monkey','🥸':'m-a-anon',
+};
+const avatarAnim = (e) => 'm-alive ' + (AVATAR_ANIM[e] || 'm-a-anon');
+const avatarKf = (e) => AVATAR_ANIM[e] || 'm-a-anon';
+// Per-animal play-once duration. Gentle sways (panda/koala/penguin) read well
+// quick; springy motions (hop, dance, bounce, blink) need more time to breathe.
+const AVATAR_DUR = {
+  '\ud83e\udd8a':'1.8s','\ud83d\udc3b':'1.9s','\ud83e\udd89':'1.7s','\ud83d\udc3c':'1.0s','\ud83d\udc38':'1.5s',
+  '\ud83e\udd81':'1.8s','\ud83d\udc19':'1.9s','\ud83e\udd8b':'1.4s','\ud83d\udc27':'1.0s',
+  '\ud83d\udc2f':'1.6s','\ud83d\udc28':'1.0s','\ud83d\udc35':'1.6s','\ud83e\udd78':'1.7s',
+};
+const avatarDur = (e) => AVATAR_DUR[e] || '1.6s';
+// Google Noto Animated Emoji — genuinely animated artwork (wings flap, tails
+// flick). Loaded as animated WebP. Avatars not in this map fall back to the
+// plain glyph (e.g. legacy tiger/koala/monkey from before the Noto switch).
+const NOTO_CP = {
+  '🦊':'1f98a','🐻':'1f43b','🦉':'1f989','🐼':'1f43c','🐸':'1f438','🦁':'1f981',
+  '🐙':'1f419','🦋':'1f98b','🐢':'1f422','🐧':'1f427','🐱':'1f431','🦄':'1f984','🦦':'1f9a6','🥸':'1f978',
+};
+const notoSrc = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/latest/${NOTO_CP[ch]}/512.webp` : null;
+// STATIC frame (PNG) — used for the many wheel thumbnails. Animated WebP for all
+// of them at once tanks scrolling to ~5fps; only the centred avatar animates.
+const notoStatic = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/latest/${NOTO_CP[ch]}/512.png` : null;
+// Curated avatar set — every animal here has a Noto animation.
+const AVATAR_SET = ['🦊','🐻','🦉','🐼','🐸','🦁','🐙','🐢','🐧','🐱','🦄','🦦'];
+// Renders an avatar as its Noto artwork that plays its animation ONCE (no loop)
+// on appear, and replays once on hover. Falls back to the native glyph when
+// there's no animation for that character.
+function AvatarFace({ ch, size, loop }) {
+  const cp = NOTO_CP[ch];
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    if (!cp || !ref.current) return;
+    let anim, cancelled = false;
+    const start = () => {
+      if (cancelled || !ref.current) return;
+      if (!window.lottie) { setTimeout(start, 90); return; } // wait for the library
+      anim = window.lottie.loadAnimation({
+        container: ref.current, renderer: 'svg', loop: !!loop, autoplay: true,
+        rendererSettings: { progressiveLoad: true },
+        path: `https://fonts.gstatic.com/s/e/notoemoji/latest/${cp}/lottie.json`,
+      });
+      // Once the animation's SVG is in, drop the static PNG behind it so you don't
+      // see a frozen duplicate under the moving one.
+      anim.addEventListener('DOMLoaded', () => { if (ref.current) ref.current.style.backgroundImage = 'none'; });
+      ref.current.__anim = anim;
+    };
+    start();
+    return () => { cancelled = true; if (anim) { try { anim.destroy(); } catch (e) {} } };
+  }, [cp, loop]);
+  if (!cp) return <span style={{ fontSize: Math.round(size * 0.92), lineHeight: 1 }}>{ch}</span>;
+  // Static PNG sits behind as a fallback so there's never a blank flash while the
+  // Lottie JSON loads — the SVG renders on top once ready.
+  return <div ref={ref} aria-hidden="true"
+    onMouseEnter={() => { const a = ref.current && ref.current.__anim; if (a) a.goToAndPlay(0, true); }}
+    style={{ width: size, height: size,
+      backgroundImage: `url(${notoStatic(ch)})`, backgroundSize: 'contain',
+      backgroundRepeat: 'no-repeat', backgroundPosition: 'center' }} />;
+}
+// Lightweight, static avatar thumbnail (animated WebP image — GPU-cheap, no
+// Lottie). Used in the picker GRID so 12 squares never spin up 12 live Lottie
+// instances (which can hang low-end renderers). Live play-once Lottie via
+// AvatarFace is reserved for the large preview + the single profile avatar.
+function AvatarImg({ ch, size }) {
+  const src = notoStatic(ch);
+  if (src) return <img src={src} alt="" draggable={false} style={{ width: size, height: size, display: 'block', objectFit: 'contain', pointerEvents: 'none' }} />;
+  return <span style={{ fontSize: Math.round(size * 0.92), lineHeight: 1 }}>{ch}</span>;
+}
+// Horizontal "scroll wheel" avatar picker. Avatars ride through a fixed center
+// frame; the centered one is the selection (rendered big) and plays its Noto
+// animation once when the wheel settles. Neighbours scale + fade by distance so
+// it reads as a curved wheel. Only the settled center is a live Lottie — the
+// rest are GPU-cheap static thumbnails.
+function AvatarWheel({ avatars, value, onChange, V, big }) {
+  const BIG = big || 92;
+  // Pitch MUST equal the slot's real laid-out width. The slot wraps a BIG-wide
+  // button, and a flex item's min-width:auto floors it at its content width — so
+  // the real pitch is BIG, not some smaller basis. Keeping SLOT === BIG makes the
+  // JS geometry agree with layout (otherwise every avatar pins to the min scale).
+  const SLOT = BIG;
+  const N = avatars.length;
+  // Infinite loop: render several repeated copies and silently recenter to the
+  // middle block once motion settles, so the strip never reaches an end and the
+  // last animal always sits beside the first.
+  const COPIES = 7, MID = 3;               // middle block is "home"; big buffer so flings never reach an edge
+  const items = React.useMemo(() => {
+    const out = [];
+    for (let c = 0; c < COPIES; c++) for (let i = 0; i < N; i++) out.push(avatars[i]);
+    return out;
+  }, [avatars]);
+  const ref = React.useRef(null);
+  const rafRef = React.useRef(0);
+  const animRef = React.useRef(0);
+  const animatingRef = React.useRef(false);
+  const settleRef = React.useRef(null);
+  const dragRef = React.useRef(null);
+  const targetRef = React.useRef(MID * N + Math.max(0, avatars.indexOf(value)));
+  const mounted = React.useRef(false);
+  const AV_SIZE = Math.round(BIG * 0.9);   // avatar fills most of the ring
+  const idxOf = (v) => { const i = avatars.indexOf(v); return i < 0 ? 0 : i; };
+  const homeRaw = (v) => MID * N + idxOf(v);
+  // The centred avatar animates (loops); everything else is a static PNG. Start
+  // already showing the home avatar live — the PNG sits behind so no blank flash.
+  const [settled, setSettled] = React.useState(homeRaw(value));
+
+  // Paint scale/opacity/background straight onto the DOM (no React re-render) so
+  // scrolling stays buttery. Distance is read from scrollLeft geometry — one
+  // layout read for the whole strip, not one per item.
+  const paint = (all) => {
+    const el = ref.current; if (!el) return;
+    const half = el.clientWidth / 2;
+    const padL = half - SLOT / 2;
+    const sl = el.scrollLeft;
+    const kids = el.children;
+    // Only repaint avatars near the viewport each frame — the rest are off-screen
+    // and already parked at their resting (small) state. Big win for scroll fps.
+    const c = sl / SLOT;
+    const lo = all ? 0 : Math.max(0, Math.floor(c - 6));
+    const hi = all ? kids.length - 1 : Math.min(kids.length - 1, Math.ceil(c + 6));
+    for (let i = lo; i <= hi; i++) {
+      const d = Math.abs((padL + i * SLOT + SLOT / 2 - sl) - half) / SLOT;
+      const btn = kids[i].firstChild;
+      if (!btn) continue;
+      // Smooth bell falloff (no hard floor) so size/opacity ease as avatars pass.
+      const prox = 1 / (1 + (d * 0.85) * (d * 0.85));
+      btn.style.transform = `scale(${(0.64 + 0.36 * prox).toFixed(3)})`;
+      btn.style.opacity = (0.5 + 0.5 * prox).toFixed(3);
+      btn.style.background = d < 0.5 ? V.accentBg : 'transparent';
+    }
+  };
+  const schedulePaint = () => {
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => { rafRef.current = 0; paint(); });
+  };
+  const nearest = () => { const el = ref.current; return el ? Math.round(el.scrollLeft / SLOT) : homeRaw(value); };
+
+  // Self-driven smooth scroll. The host environment's native scrollTo({behavior:
+  // 'smooth'}) is a no-op here, so we tween scrollLeft ourselves with rAF (instant
+  // scrollLeft writes DO work). Used for snapping, arrows and taps.
+  const cancelAnim = () => { if (animRef.current) cancelAnimationFrame(animRef.current); animRef.current = 0; animatingRef.current = false; };
+  const finishSnap = () => {
+    recenter();
+    const best = nearest();
+    targetRef.current = best;
+    setSettled(best);                       // centre always carries the one live Lottie
+    onChange && onChange(avatars[best % N]);
+  };
+  const animateTo = (target) => {
+    const el = ref.current; if (!el) return;
+    cancelAnim();
+    const start = el.scrollLeft, dist = target - start;
+    if (Math.abs(dist) < 1) { el.scrollLeft = target; paint(); finishSnap(); return; }
+    const dur = Math.min(420, 150 + Math.abs(dist) * 0.55);
+    const t0 = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);
+    animatingRef.current = true;
+    const tick = (now) => {
+      const t = Math.min(1, (now - t0) / dur);
+      el.scrollLeft = start + dist * ease(t);
+      paint();
+      if (t < 1) { animRef.current = requestAnimationFrame(tick); }
+      else { animRef.current = 0; animatingRef.current = false; finishSnap(); }
+    };
+    animRef.current = requestAnimationFrame(tick);
+  };
+
+  // Jump by whole cycles to keep the position inside the middle blocks — seamless
+  // because every block is an identical copy of the avatar sequence. Looped so it
+  // corrects any distance, even a hard fling, before an edge can be reached.
+  const recenter = () => {
+    const el = ref.current; if (!el) return;
+    const cycle = N * SLOT;
+    let guard = 0;
+    while (el.scrollLeft < (MID - 1) * cycle && guard++ < COPIES) el.scrollLeft += cycle;
+    while (el.scrollLeft > (MID + 1) * cycle && guard++ < COPIES) el.scrollLeft -= cycle;
+  };
+
+  const onSettle = () => { animateTo(nearest() * SLOT); };
+
+  const onScroll = () => {
+    schedulePaint();
+    if (animatingRef.current) return;   // our own tween handles its finish-snap
+    if (settleRef.current) clearTimeout(settleRef.current);
+    settleRef.current = setTimeout(onSettle, 130);
+  };
+
+  // Step the wheel by one avatar (arrow buttons) — works on every device.
+  // Steps accumulate off targetRef so rapid taps advance reliably mid-animation.
+  const step = (dir) => {
+    const base = animatingRef.current ? targetRef.current : nearest();
+    targetRef.current = base + dir;
+    cancelAnim();
+    animateTo(targetRef.current * SLOT);
+  };
+
+  // Desktop: click-and-drag to spin the wheel (touch uses native momentum).
+  const onPointerDown = (e) => {
+    cancelAnim();
+    if (e.pointerType === 'touch') return;
+    const el = ref.current; if (!el) return;
+    dragRef.current = { x: e.clientX, left: el.scrollLeft, moved: 0 };
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    el.style.cursor = 'grabbing';
+  };
+  const onPointerMove = (e) => {
+    const dr = dragRef.current; if (!dr) return;
+    const el = ref.current; if (!el) return;
+    const dx = e.clientX - dr.x;
+    dr.moved = Math.max(dr.moved, Math.abs(dx));
+    el.scrollLeft = dr.left - dx;
+  };
+  const endDrag = () => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    const el = ref.current; if (el) el.style.cursor = 'grab';
+  };
+
+  // Place the home avatar and paint before first browser paint (no flash).
+  React.useLayoutEffect(() => {
+    const el = ref.current; if (!el) return;
+    if (!mounted.current) { el.scrollLeft = homeRaw(value) * SLOT; mounted.current = true; }
+    paint(true);
+  });
+
+  // Desktop: map the mouse/trackpad wheel to horizontal movement. Attached as a
+  // NON-passive native listener so preventDefault actually stops the page from
+  // scrolling underneath (React's onWheel is passive and can't).
+  React.useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const onWheel = (e) => {
+      const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (!delta) return;
+      e.preventDefault();
+      cancelAnim();
+      el.scrollLeft += delta;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // The very first paint can run before the scroller has a real width (which
+  // would pin every avatar to the minimum scale). Repaint next frame and on any
+  // resize so the wheel always reflects the true geometry.
+  React.useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const raf = requestAnimationFrame(() => paint(true));
+    let ro;
+    if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(() => paint(true)); ro.observe(el); }
+    return () => { cancelAnimationFrame(raf); if (ro) ro.disconnect(); };
+  }, []);
+
+  const tapTo = (i) => {
+    const dr = dragRef.current;
+    if (dr && dr.moved > 4) return;               // ignore the click that ends a drag
+    targetRef.current = i; cancelAnim(); animateTo(i * SLOT);
+  };
+
+  return (
+    <div className="m-wheel-in" style={{ position: 'relative', width: '100%', height: BIG + 14, marginTop: 2 }}>
+      {/* fixed center frame the avatars ride through */}
+      <div aria-hidden="true" style={{
+        position: 'absolute', top: '50%', left: '50%', width: BIG + 6, height: BIG + 6,
+        transform: 'translate(-50%,-50%)', borderRadius: '50%',
+        border: `2.5px solid ${V.accent}`, boxShadow: '0 6px 16px rgba(60,30,20,0.14)',
+        pointerEvents: 'none', zIndex: 3,
+      }} />
+      <div ref={ref} onScroll={onScroll}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={endDrag} onPointerCancel={endDrag} onPointerLeave={endDrag}
+        style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
+          overflowX: 'auto', overflowY: 'hidden', cursor: 'grab', touchAction: 'pan-x',
+          padding: `0 calc(50% - ${SLOT / 2}px)`, WebkitOverflowScrolling: 'touch',
+        }}>
+        {items.map((a, i) => (
+          <div key={i} style={{ flex: `0 0 ${SLOT}px`, minWidth: 0, height: BIG,
+            display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <button type="button" onClick={() => tapTo(i)} className="m-tap" aria-label={`Avatar ${(i % N) + 1}`} style={{
+              width: BIG, height: BIG, borderRadius: '50%', border: 'none', padding: 0, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'background .18s ease', willChange: 'transform',
+            }}>
+              {i === settled
+                ? <AvatarFace ch={a} size={AV_SIZE} loop />
+                : <AvatarImg ch={a} size={AV_SIZE} />}
+            </button>
+          </div>
+        ))}
+      </div>
+      {/* foolproof nudge arrows — work on every device, no scrolling needed */}
+      {[-1, 1].map(dir => (
+        <button key={dir} type="button" onClick={() => step(dir)} className="m-tap"
+          aria-label={dir < 0 ? 'Previous avatar' : 'Next avatar'} style={{
+          position: 'absolute', top: '50%', [dir < 0 ? 'left' : 'right']: 2,
+          transform: 'translateY(-50%)', zIndex: 4,
+          width: 30, height: 30, borderRadius: '50%', cursor: 'pointer',
+          background: V.surface, border: `1px solid ${V.rule}`,
+          boxShadow: '0 2px 8px rgba(60,30,20,0.12)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', color: V.ink,
+        }}><span style={{ display: 'flex', transform: dir < 0 ? 'rotate(180deg)' : 'none' }}>{Icon.chevron(15, V.ink)}</span></button>
+      ))}
+    </div>
+  );
+}
+function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, openMessages, openProfile, openCourses, openExplore, profile, liveCourses, enrollments }) {
   const pad = dense ? 14 : 18;
 
   // User profile (the signed-in learner) — from registration, or defaults.
@@ -2773,6 +3176,10 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
     avatar: profile && profile.avatar,        // emoji if avatar chosen
     photoSrc: profile && profile.photoSrc,    // dataURL if photo uploaded
   };
+  // Show the uploaded photo if there is one; otherwise the chosen emoji avatar,
+  // or the incognito fallback face — never a stock stranger.
+  const userHasPhoto = !!USER.photoSrc;
+  const userFace = USER.avatar || ANON_AVATAR;
 
   // Time-aware greeting
   const hour = new Date().getHours();
@@ -2791,7 +3198,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
         padding: `${dense ? 8 : 12}px 2px ${dense ? 14 : 18}px`,
       }}>
         {/* Profile photo — large, framed */}
-        <button onClick={() => openProfile && openProfile()} className="m-tap" style={{
+        <button onClick={() => openProfile && openProfile()} className="m-tap m-av-hover" style={{
           background: 'transparent', border: 'none', padding: 0, position: 'relative',
           flexShrink: 0,
         }}>
@@ -2801,34 +3208,53 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
               boxShadow: '0 6px 16px rgba(60,40,20,0.18)',
               transform: 'rotate(-3deg)',
             }}>
-              <img src={USER.photo} alt={USER.name} style={{
-                display: 'block',
-                width: dense ? 54 : 62, height: dense ? 54 : 62,
-                objectFit: 'cover',
-              }} />
+              {userHasPhoto ? (
+                <img src={USER.photoSrc} alt={USER.name} style={{
+                  display: 'block',
+                  width: dense ? 54 : 62, height: dense ? 54 : 62,
+                  objectFit: 'cover',
+                }} />
+              ) : (
+                <span style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: dense ? 54 : 62, height: dense ? 54 : 62,
+                  background: V.accentBg, fontSize: dense ? 32 : 38,
+                }}><AvatarFace ch={userFace} size={dense ? 46 : 54} /></span>
+              )}
             </div>
           ) : V.bold ? (
             <SparkRing pct={62} size={dense ? 56 : 62} stroke={4} color={V.ribbon}>
-              {USER.avatar ? (
+              {userHasPhoto ? (
+                <img src={USER.photoSrc} alt={USER.name} style={{
+                  width: dense ? 44 : 48, height: dense ? 44 : 48,
+                  borderRadius: '50%', objectFit: 'cover',
+                }} />
+              ) : (
                 <span style={{
                   width: dense ? 44 : 48, height: dense ? 44 : 48, borderRadius: '50%',
                   background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: dense ? 26 : 28,
-                }}>{USER.avatar}</span>
-              ) : (
-                <img src={USER.photoSrc || USER.photo} alt={USER.name} style={{
-                  width: dense ? 44 : 48, height: dense ? 44 : 48,
-                  borderRadius: '50%', objectFit: 'cover',
-                }} />
+                }}><AvatarFace ch={userFace} size={dense ? 40 : 44} /></span>
               )}
             </SparkRing>
           ) : (
-            <img src={USER.photo} alt={USER.name} style={{
-              width: dense ? 58 : 66, height: dense ? 58 : 66,
-              borderRadius: '50%', objectFit: 'cover',
-              border: `3px solid ${V.surface}`,
-              boxShadow: '0 6px 16px rgba(60,30,20,0.18)',
-            }} />
+            userHasPhoto ? (
+              <img src={USER.photoSrc} alt={USER.name} style={{
+                width: dense ? 58 : 66, height: dense ? 58 : 66,
+                borderRadius: '50%', objectFit: 'cover',
+                border: `3px solid ${V.surface}`,
+                boxShadow: '0 6px 16px rgba(60,30,20,0.18)',
+              }} />
+            ) : (
+              <span style={{
+                width: dense ? 58 : 66, height: dense ? 58 : 66,
+                borderRadius: '50%', background: V.accentBg,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: dense ? 32 : 38,
+                border: `3px solid ${V.surface}`,
+                boxShadow: '0 6px 16px rgba(60,30,20,0.18)',
+              }}><AvatarFace ch={userFace} size={dense ? 50 : 58} /></span>
+            )
           )}
           {/* Online dot (hidden in spark — ring shows level instead) */}
           {!V.bold && <span style={{
@@ -2931,8 +3357,8 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
                    title="Continue learning"
                    dense={dense}
         action={
-          <button style={{
-            background: 'transparent', border: 'none', color: V.accent,
+          <button onClick={openCourses} className="m-tap" style={{
+            background: 'transparent', border: 'none', color: V.accent, cursor: 'pointer',
             fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 3,
           }}>All courses {Icon.arrow(13)}</button>
         } />
@@ -3114,8 +3540,8 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, open
                    title="You might also like"
                    dense={dense}
         action={
-          <button style={{
-            background: 'transparent', border: 'none', color: V.accent,
+          <button onClick={openExplore} className="m-tap" style={{
+            background: 'transparent', border: 'none', color: V.accent, cursor: 'pointer',
             fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 3,
           }}>Explore {Icon.arrow(13)}</button>
         } />
@@ -3464,27 +3890,27 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, openMe
         display: 'flex', alignItems: 'center', gap: dense ? 12 : 14,
         padding: `${dense ? 8 : 12}px 2px ${dense ? 16 : 22}px`,
       }}>
-        {me.avatar ? (
-          <div style={{
+        {!me.photoSrc ? (
+          <div className="m-av-hover" style={{
             width: dense ? 60 : 68, height: dense ? 60 : 68, borderRadius: '50%', flexShrink: 0,
             background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: dense ? 30 : 34, border: `3px solid ${V.surface}`,
             boxShadow: '0 6px 16px rgba(60,30,20,0.18)',
-          }}>{me.avatar}</div>
+          }}><AvatarFace ch={me.avatar || ANON_AVATAR} size={dense ? 50 : 56} /></div>
         ) : V.polaroid ? (
           <div style={{
             background: '#fffaf0', padding: '4px 4px 10px',
             boxShadow: '0 6px 16px rgba(60,40,20,0.18)',
             transform: 'rotate(-3deg)', flexShrink: 0,
           }}>
-            <img src={me.photoSrc || me.photo} alt={me.name} style={{
+            <img src={me.photoSrc} alt={me.name} style={{
               display: 'block',
               width: dense ? 56 : 64, height: dense ? 56 : 64,
               objectFit: 'cover',
             }} />
           </div>
         ) : (
-          <img src={me.photoSrc || me.photo} alt={me.name} style={{
+          <img src={me.photoSrc} alt={me.name} style={{
             width: dense ? 60 : 68, height: dense ? 60 : 68,
             borderRadius: '50%', objectFit: 'cover',
             border: `3px solid ${V.surface}`,
@@ -4341,6 +4767,9 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
   // ── Search & filters ──────────────────────────────────
   const [query, setQuery] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
+  const [sheetShown, setSheetShown] = useState(false);
+  // Smooth open/close: mount → slide up; slide down → unmount after the anim.
+  const closeFilter = () => { setSheetShown(false); setTimeout(() => setFilterOpen(false), 280); };
   const [sortBy, setSortBy] = useState('popular');
   const [priceBand, setPriceBand] = useState('all');
   const exploreRef = React.useRef(null);
@@ -4354,6 +4783,12 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
     while (el && !(el.getAttribute && el.getAttribute('data-mvar'))) el = el.parentElement;
     setSheetTarget(el || document.body);
   }, [filterOpen]);
+  React.useEffect(() => {
+    if (filterOpen && sheetTarget) {
+      const id = requestAnimationFrame(() => setSheetShown(true));
+      return () => cancelAnimationFrame(id);
+    }
+  }, [filterOpen, sheetTarget]);
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
   const filtersActive = sortBy !== 'popular' || priceBand !== 'all';
@@ -4750,14 +5185,18 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
 
       {/* Filter & sort sheet */}
       {filterOpen && sheetTarget && ReactDOM.createPortal((
-        <div onClick={() => setFilterOpen(false)} style={{
-          position: 'absolute', inset: 0, zIndex: 60, background: 'rgba(20,16,12,0.45)',
+        <div onClick={closeFilter} style={{
+          position: 'absolute', inset: 0, zIndex: 60,
+          background: sheetShown ? 'rgba(20,16,12,0.45)' : 'rgba(20,16,12,0)',
+          transition: 'background 0.28s ease',
           display: 'flex', alignItems: 'flex-end',
         }}>
-          <div onClick={e => e.stopPropagation()} className="m-fade" style={{
+          <div onClick={e => e.stopPropagation()} style={{
             width: '100%', background: V.bg, borderRadius: '22px 22px 0 0',
             padding: `14px ${pad}px calc(${pad}px + 8px)`, maxHeight: '82%', overflowY: 'auto',
             boxShadow: '0 -8px 30px rgba(20,16,12,0.25)',
+            transform: sheetShown ? 'translateY(0)' : 'translateY(100%)',
+            transition: 'transform 0.34s cubic-bezier(.22,1,.36,1)',
           }}>
             <div style={{ width: 40, height: 4, borderRadius: 100, background: V.rule, margin: '0 auto 14px' }} />
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -4796,7 +5235,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
               })}
             </div>
 
-            <button onClick={() => setFilterOpen(false)} className="m-tap" style={{
+            <button onClick={closeFilter} className="m-tap" style={{
               width: '100%', background: V.ink, color: V.bg, border: 'none', borderRadius: 14,
               padding: '14px', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: V.fontSans }}>
               Show {browseCount} {browseCount === 1 ? 'class' : 'classes'}
@@ -4809,21 +5248,229 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// EDIT PROFILE — name, photo/avatar, bio (+ read-only town record)
+// ─────────────────────────────────────────────────────────
+// Module-level so it is NOT re-created each render — defining it inside the
+// component would remount its <input> every keystroke and drop focus.
+function EditField({ V, dense, label, children }) {
+  return (
+    <div style={{ marginBottom: dense ? 16 : 18 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                    color: V.inkMute, marginBottom: 8 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+function EditProfileScreen({ V, dense, role, profile, onSave, goBack }) {
+  const pad = dense ? 14 : 18;
+  const isTeacher = role === 'teacher';
+  const AVATARS = AVATAR_SET;
+  const BIO_MAX = 160;
+  const fileRef = React.useRef(null);
+
+  const [name, setName] = useState((profile && profile.name) || '');
+  const [bio, setBio]   = useState((profile && profile.bio) || '');
+  const [craft, setCraft] = useState((profile && profile.craft) || '');
+  const initialMode = (profile && profile.photoMode === 'photo') ? 'photo'
+                    : (profile && profile.avatar) ? 'avatar' : null;
+  const [photoMode, setPhotoMode] = useState(initialMode);
+  const [photoSrc, setPhotoSrc]   = useState((profile && profile.photoSrc) || null);
+  const [avatarVal, setAvatarVal] = useState((profile && profile.avatar) || AVATARS[0]);
+
+  const onPickFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { setPhotoSrc(r.result); setPhotoMode('photo'); };
+    r.readAsDataURL(f);
+  };
+
+  const save = () => {
+    const patch = { name: name.trim() || (profile && profile.name) || 'Member' };
+    if (isTeacher) { patch.bio = bio.trim(); patch.craft = craft.trim(); } // mentor-only fields
+    if (photoMode === 'photo' && photoSrc) { patch.photoMode = 'photo'; patch.photoSrc = photoSrc; patch.avatar = null; }
+    else if (photoMode === 'avatar')        { patch.photoMode = null; patch.photoSrc = null; patch.avatar = avatarVal; }
+    else                                    { patch.photoMode = null; patch.photoSrc = null; patch.avatar = null; }
+    onSave && onSave(patch);
+  };
+
+  const record = [
+    (profile && profile.unit) ? { label: 'Unit', value: profile.unit } : null,
+    (profile && profile.zone) ? { label: 'Zone', value: 'Zone ' + profile.zone } : null,
+    (profile && profile.residency) ? { label: 'Residency', value: profile.residency.charAt(0).toUpperCase() + profile.residency.slice(1) } : null,
+    (profile && profile.accountType) ? { label: 'Account', value: profile.accountType === 'family' ? 'Family' : 'Sole' } : null,
+  ].filter(Boolean);
+
+  return (
+    <div className="m-fade" style={{ height: '100%', display: 'flex', flexDirection: 'column',
+                                     fontFamily: V.fontSans, color: V.ink }}>
+      {/* Header */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: `8px ${pad}px ${dense ? 10 : 12}px`,
+        borderBottom: `1px solid ${V.rule}`, background: V.bg,
+        backgroundImage: V.paper ? PAPER_NOISE : undefined,
+        backgroundSize: V.paper ? '240px 240px' : undefined,
+      }}>
+        <button onClick={goBack} className="m-tap" style={{
+          width: 36, height: 36, borderRadius: '50%', background: V.surface,
+          border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: V.ink, flexShrink: 0,
+        }}>{Icon.back(18)}</button>
+        <div className="m-serif" style={{ flex: 1, fontSize: 18, color: V.ink, fontWeight: V.polaroid ? 500 : 400 }}>
+          Edit profile
+        </div>
+        <button onClick={save} className="m-tap" style={{
+          background: V.accent, color: '#fffaf0', border: 'none', borderRadius: 100,
+          padding: '8px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
+          boxShadow: `0 4px 12px ${V.accent}40`,
+        }}>Save</button>
+      </div>
+
+      {/* Body */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: `${dense ? 16 : 20}px ${pad}px calc(${pad}px + 12px)` }}>
+        {/* Avatar / photo picker */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: dense ? 18 : 22 }}>
+          {photoMode === 'avatar' ? (
+            <AvatarWheel avatars={AVATARS} value={avatarVal} onChange={setAvatarVal} V={V} big={96} />
+          ) : (
+          <div style={{
+            width: 96, height: 96, borderRadius: '50%',
+            background: V.accentBg, border: `2px solid ${V.surface}`,
+            boxShadow: '0 6px 16px rgba(60,30,20,0.14)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            overflow: 'hidden', position: 'relative',
+          }}>
+            {photoMode === 'photo' && photoSrc ? (
+              <img src={photoSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <AvatarFace ch={ANON_AVATAR} size={76} />
+            )}
+          </div>
+          )}
+          <input ref={fileRef} type="file" accept="image/*" onChange={onPickFile} style={{ display: 'none' }} />
+          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
+            <button type="button" onClick={() => fileRef.current && fileRef.current.click()} className="m-tap" style={{
+              flex: 1, padding: '10px 0', borderRadius: 12,
+              background: photoMode === 'photo' ? V.accent : V.surface,
+              color: photoMode === 'photo' ? '#fffaf0' : V.ink,
+              border: `1px solid ${photoMode === 'photo' ? V.accent : V.rule}`,
+              fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}><span style={{ fontSize: 15 }}>📷</span> Upload photo</button>
+            <button type="button" onClick={() => setPhotoMode(m => m === 'avatar' ? null : 'avatar')} className="m-tap" style={{
+              flex: 1, padding: '10px 0', borderRadius: 12,
+              background: photoMode === 'avatar' ? V.accent : V.surface,
+              color: photoMode === 'avatar' ? '#fffaf0' : V.ink,
+              border: `1px solid ${photoMode === 'avatar' ? V.accent : V.rule}`,
+              fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}><span style={{ fontSize: 15 }}>🐾</span> Pick avatar</button>
+          </div>
+          {photoMode === 'avatar' && (
+            <div className="m-fade" style={{ fontSize: 11, color: V.inkMute, textAlign: 'center' }}>
+              Swipe to find one that feels like you.
+            </div>
+          )}
+          {(photoMode === 'photo' && photoSrc) && (
+            <button type="button" onClick={() => { setPhotoSrc(null); setPhotoMode(null); }} className="m-tap" style={{
+              background: 'transparent', border: 'none', color: V.inkMute, fontSize: 11.5, cursor: 'pointer', padding: 0,
+            }}>Remove photo</button>
+          )}
+        </div>
+
+        {/* Name */}
+        <EditField V={V} dense={dense} label="Your name">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
+            style={{ width: '100%', boxSizing: 'border-box', background: V.surface,
+                     border: `1px solid ${V.rule}`, borderRadius: 12, padding: '12px 14px',
+                     fontSize: 14, color: V.ink, outline: 'none', fontFamily: V.fontSans }} />
+        </EditField>
+
+        {/* What you teach — mentors only */}
+        {isTeacher && (
+          <EditField V={V} dense={dense} label="What you teach">
+            <input value={craft} onChange={e => setCraft(e.target.value)} maxLength={40}
+              placeholder="e.g. Watercolor artist, Home chef, Yoga teacher"
+              style={{ width: '100%', boxSizing: 'border-box', background: V.surface,
+                       border: `1px solid ${V.rule}`, borderRadius: 12, padding: '12px 14px',
+                       fontSize: 14, color: V.ink, outline: 'none', fontFamily: V.fontSans }} />
+          </EditField>
+        )}
+
+        {/* Bio — mentors only (keeps the app a learning space, not a social feed) */}
+        {isTeacher && (
+          <EditField V={V} dense={dense} label="Bio">
+            <textarea value={bio} maxLength={BIO_MAX} onChange={e => setBio(e.target.value)}
+              placeholder="A line or two about what you teach and your approach."
+              rows={3}
+              style={{ width: '100%', boxSizing: 'border-box', background: V.surface,
+                       border: `1px solid ${V.rule}`, borderRadius: 12, padding: '12px 14px',
+                       fontSize: 14, color: V.ink, outline: 'none', fontFamily: V.fontSans,
+                       resize: 'none', lineHeight: 1.5 }} />
+            <div style={{ textAlign: 'right', fontSize: 11, color: V.inkMute, marginTop: 4 }}>
+              {bio.length}/{BIO_MAX}
+            </div>
+          </EditField>
+        )}
+
+        {/* Read-only El Gouna record */}
+        {record.length > 0 && (
+          <EditField V={V} dense={dense} label="Your El Gouna record">
+            <div style={{ background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 12, overflow: 'hidden' }}>
+              {record.map((r, i) => (
+                <div key={r.label} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '11px 14px', borderTop: i ? `1px dashed ${V.rule}` : 'none',
+                }}>
+                  <span style={{ fontSize: 13, color: V.inkMute }}>{r.label}</span>
+                  <span style={{ fontSize: 13.5, color: V.ink, fontWeight: 600 }}>{r.value}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: V.inkMute, marginTop: 7, lineHeight: 1.4 }}>
+              From your El Gouna town record. To change these, contact community management.
+            </div>
+          </EditField>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
 // SETTINGS TAB
 // ─────────────────────────────────────────────────────────
-function SettingsScreen({ V, dense, role, onSignOut, profile }) {
+function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   const baseMe = MENTORS[0]; // signed-in user — Layla either way for demo
-  // Override with the profile chosen at registration (name + avatar/photo).
+  // Override with the profile chosen at registration (name + avatar/photo + bio).
   const me = {
     ...baseMe,
     name: (profile && profile.name) || baseMe.name,
     avatar: profile && profile.avatar,
     photoSrc: profile && profile.photoMode === 'photo' && profile.photoSrc,
+    bio: (profile && profile.bio) || '',
+    craft: (profile && profile.craft) || '',
   };
+  // El Gouna location line — their unit/zone (town record), never demo data.
+  const meLocation = [
+    (profile && profile.unit) ? ('Unit ' + profile.unit) : null,
+    (profile && profile.zone) ? ('Zone ' + profile.zone) : null,
+  ].filter(Boolean).join(' · ') || 'El Gouna';
 
-  const [notifs, setNotifs] = useState({ purchases: true, reviews: true, messages: true, digest: false });
+  // Notification preferences persist across sessions.
+  const [notifs, setNotifs] = useState(() => {
+    const defaults = { purchases: true, reviews: true, messages: true, digest: false };
+    try { return { ...defaults, ...JSON.parse(localStorage.getItem('mentora_notif_prefs') || '{}') }; }
+    catch (e) { return defaults; }
+  });
+  const setNotif = (key) => setNotifs(n => {
+    const next = { ...n, [key]: !n[key] };
+    try { localStorage.setItem('mentora_notif_prefs', JSON.stringify(next)); } catch (e) {}
+    return next;
+  });
 
   const Row = ({ icon, label, value, onClick, danger }) => (
     <button onClick={onClick} className="m-tap" style={{
@@ -4886,41 +5533,56 @@ function SettingsScreen({ V, dense, role, onSignOut, profile }) {
           padding: dense ? 14 : 16,
           backgroundImage: V.paper ? PAPER_NOISE : undefined,
           backgroundSize: V.paper ? '240px 240px' : undefined,
-          display: 'flex', alignItems: 'center', gap: 14,
+          display: 'flex', alignItems: 'flex-start', gap: 14,
         }}>
-          {me.avatar ? (
-            <div style={{
+          {!me.photoSrc ? (
+            <div className="m-av-hover" style={{
               width: 58, height: 58, borderRadius: '50%', flexShrink: 0,
               background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 30, border: `3px solid ${V.surface}`,
               boxShadow: '0 6px 16px rgba(60,30,20,0.18)',
-            }}>{me.avatar}</div>
+            }}><AvatarFace ch={me.avatar || ANON_AVATAR} size={48} /></div>
           ) : V.polaroid ? (
             <div style={{
               background: '#fffaf0', padding: '4px 4px 10px',
               boxShadow: '0 6px 16px rgba(60,40,20,0.18)',
               transform: 'rotate(-3deg)', flexShrink: 0,
             }}>
-              <img src={me.photoSrc || me.photo} alt={me.name} style={{
+              <img src={me.photoSrc} alt={me.name} style={{
                 display: 'block', width: 54, height: 54, objectFit: 'cover',
               }} />
             </div>
           ) : (
-            <img src={me.photoSrc || me.photo} alt={me.name} style={{
+            <img className="m-av-hover" src={me.photoSrc} alt={me.name} style={{
               width: 58, height: 58, borderRadius: '50%', objectFit: 'cover',
               border: `3px solid ${V.surface}`,
               boxShadow: '0 6px 16px rgba(60,30,20,0.18)', flexShrink: 0,
             }} />
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="m-serif" style={{ fontSize: 16, color: V.ink, lineHeight: 1.1 }}>
+            <div className="m-serif" style={{ fontSize: 16.5, color: V.ink, lineHeight: 1.2 }}>
               {me.name}
             </div>
-            <div style={{ fontSize: 11.5, color: V.inkMute, marginTop: 2 }}>
-              {isTeacher ? me.craft : 'Learner'} · {me.city}
+            <div style={{ fontSize: 12, color: V.ink, fontWeight: 600, marginTop: 5 }}>
+              {isTeacher ? (me.craft || 'Mentor') : 'Learner'}
             </div>
-            <button className="m-tap" style={{
-              marginTop: 6, background: 'transparent', border: 'none',
+            <div style={{ fontSize: 11, color: V.inkMute, marginTop: 3,
+                          display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+              {Icon.pin(11, V.inkMute)}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meLocation}</span>
+            </div>
+            {isTeacher && (me.bio ? (
+              <div style={{ marginTop: 11, paddingTop: 11, borderTop: `1px dashed ${V.rule}`,
+                            fontSize: 12.5, color: V.inkSoft, lineHeight: 1.55, whiteSpace: 'pre-line' }}>
+                {me.bio}
+              </div>
+            ) : (
+              <div style={{ fontSize: 11.5, color: V.inkMute, marginTop: 9, fontStyle: 'italic' }}>
+                No bio yet — tap Edit profile to add one.
+              </div>
+            ))}
+            <button onClick={() => onEditProfile && onEditProfile()} className="m-tap" style={{
+              marginTop: 12, background: 'transparent', border: 'none', cursor: 'pointer',
               color: V.accent, fontSize: 12, fontWeight: 600, padding: 0,
             }}>Edit profile →</button>
           </div>
@@ -4936,8 +5598,6 @@ function SettingsScreen({ V, dense, role, onSignOut, profile }) {
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
         <SettingsGroupHead V={V} pad={pad}>Account</SettingsGroupHead>
-        <Row icon={Icon.user(15, V.ink)} label="Profile & bio" />
-        <DividerRow V={V} />
         {isTeacher
           ? <Row icon={<span style={{ fontSize: 15 }}>💰</span>} label="Payouts & banking" value="May 15" />
           : <Row icon={<span style={{ fontSize: 15 }}>💳</span>} label="Payment method" value="•••• 4242" />
@@ -4973,7 +5633,7 @@ function SettingsScreen({ V, dense, role, onSignOut, profile }) {
               padding: dense ? '12px 16px' : '14px 18px',
             }}>
               <div style={{ flex: 1, fontSize: 14, color: V.ink }}>{label}</div>
-              <Toggle on={notifs[key]} onClick={() => setNotifs(n => ({ ...n, [key]: !n[key] }))} />
+              <Toggle on={notifs[key]} onClick={() => setNotif(key)} />
             </div>
             {i < arr.length - 1 && <DividerRow V={V} />}
           </React.Fragment>
@@ -5915,13 +6575,17 @@ function WelcomeScreen({ V, dense, os, onEnter, onSignIn }) {
       fontFamily: V.fontSans, color: V.accent, position: 'relative',
       overflow: 'hidden',
     }}>
-      {/* Video background — base64-inlined so it loads without dev-server auth */}
+      {/* Video background — external welcome.mp4 in production. The preview
+          sandbox can't serve large binaries (auth-gated), so we skip the video
+          there and let the inlined poster image stand in — no noisy load error. */}
       <video
         autoPlay muted loop playsInline
+        poster={(typeof window !== 'undefined' && window.__landingBgImageSrc) || undefined}
         ref={el => {
-          if (el && window.__welcomeBgVideoSrc && el.src !== window.__welcomeBgVideoSrc) {
-            el.src = window.__welcomeBgVideoSrc;
-          }
+          if (!el || !window.__welcomeBgVideoSrc) return;
+          var host = (typeof location !== 'undefined' && location.hostname) || '';
+          if (/claudeusercontent\.com$/.test(host)) return; // preview sandbox
+          if (el.src !== window.__welcomeBgVideoSrc) el.src = window.__welcomeBgVideoSrc;
         }}
         style={{
           position: 'absolute', inset: 0,
@@ -7162,7 +7826,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
   const [residency, setResidency] = useState('owner');
   const [accountType, setAccountType] = useState('sole');
   // Profile photo / avatar
-  const AVATARS = ['🦊','🐻','🦉','🐼','🐸','🦁','🐙','🦋','🐧','🐯','🐨','🐵'];
+  const AVATARS = AVATAR_SET;
   const [photoMode, setPhotoMode] = useState(null);   // null | 'photo' | 'avatar'
   const [photoSrc, setPhotoSrc] = useState(null);      // dataURL when a photo is chosen
   const [avatarIdx, setAvatarIdx] = useState(0);
@@ -7271,7 +7935,10 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
         {/* Profile photo / avatar picker */}
         <BlurFade delay={0.12} duration={0.5} yOffset={6}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-            {/* Preview circle */}
+            {/* Preview circle — or the scroll-wheel when choosing an avatar */}
+            {photoMode === 'avatar' ? (
+              <AvatarWheel avatars={AVATARS} value={AVATARS[avatarIdx]} onChange={(a) => setAvatarIdx(AVATARS.indexOf(a))} V={V} big={92} />
+            ) : (
             <div style={{
               width: 92, height: 92, borderRadius: '50%',
               background: photoMode === 'avatar' ? V.accentBg : V.surfaceAlt,
@@ -7281,12 +7948,11 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
             }}>
               {photoMode === 'photo' && photoSrc ? (
                 <img src={photoSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : photoMode === 'avatar' ? (
-                <span style={{ fontSize: 48 }}>{AVATARS[avatarIdx]}</span>
               ) : (
                 <span style={{ color: V.inkMute }}>{Icon.user(34, V.inkMute)}</span>
               )}
             </div>
+            )}
             {/* Hidden file input — tapping "Upload photo" prompts OS photo access */}
             <input ref={fileRef} type="file" accept="image/*"
                    onChange={onPickFile} style={{ display: 'none' }} />
@@ -7317,25 +7983,9 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
               </button>
             </div>
             {/* Avatar grid (only when choosing avatar) */}
-            {photoMode === 'avatar' && (
-              <div className="m-fade" style={{
-                display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6, width: '100%',
-              }}>
-                {AVATARS.map((a, i) => (
-                  <button key={i} type="button" onClick={() => setAvatarIdx(i)}
-                    className="m-tap" style={{
-                      aspectRatio: '1', borderRadius: 12,
-                      background: avatarIdx === i ? V.accentBg : V.surface,
-                      border: `1.5px solid ${avatarIdx === i ? V.accent : V.rule}`,
-                      fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      cursor: 'pointer',
-                    }}>{a}</button>
-                ))}
-              </div>
-            )}
             <div style={{ fontSize: 11, color: V.inkMute, textAlign: 'center' }}>
               {photoMode === 'photo' ? 'Looking good!'
-                : photoMode === 'avatar' ? 'Pick one that feels like you.'
+                : photoMode === 'avatar' ? 'Swipe to find one that feels like you.'
                 : 'Add a profile photo or choose an avatar.'}
             </div>
           </div>
@@ -7669,8 +8319,8 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
           }}>
             {agreed && Icon.check(13, '#fffaf0')}
           </div>
-          <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#ffffff', lineHeight: 1.5, whiteSpace: 'normal' }}>
-            <span style={{ color: '#ffffff' }}>I agree to the </span><span style={{ color: V.accent, fontWeight: 600 }}>Community Guidelines</span><span style={{ color: '#ffffff' }}> and </span><span style={{ color: V.accent, fontWeight: 600 }}>Terms</span><span style={{ color: '#ffffff' }}>. We keep things human here.</span>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: V.ink, lineHeight: 1.5, whiteSpace: 'normal' }}>
+            <span style={{ color: V.ink }}>I agree to the </span><span style={{ color: V.accent, fontWeight: 600 }}>Community Guidelines</span><span style={{ color: V.ink }}> and </span><span style={{ color: V.accent, fontWeight: 600 }}>Terms</span><span style={{ color: V.ink }}>. We keep things human here.</span>
           </div>
         </button>
         </BlurFade>
@@ -8342,22 +8992,48 @@ function NotificationsScreen({ V, dense, role, goBack, openChat }) {
 // ─────────────────────────────────────────────────────────
 // CHAT LIST — 1:1 mentor↔learner + class group threads
 // ─────────────────────────────────────────────────────────
+// Cross-mount caches: returning to Messages (or reopening a chat) paints
+// instantly from the last fetched data while fresh data loads in the
+// background — instead of a blank/slow wait every navigation.
+let CONVO_CACHE = null;
+const THREAD_CACHE = {};
 function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenConversation }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   const [filter, setFilter] = useState('all');
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composeShown, setComposeShown] = useState(false);
+  const [memberQuery, setMemberQuery] = useState('');
+  const listRef = React.useRef(null);
+  const [composeTarget, setComposeTarget] = useState(null);
+  // Smooth open/close: mount → slide up; slide down → unmount after the anim.
+  const closeCompose = () => { setComposeShown(false); setTimeout(() => { setComposeOpen(false); setMemberQuery(''); }, 280); };
   // Real member directory for the "+" compose sheet (deployed build).
+  // Prefetched once on mount so tapping "+" opens instantly — no per-open lag.
   const [pickMentors, setPickMentors] = React.useState(null);
   React.useEffect(() => {
     const db = (typeof window !== 'undefined') && window.MENTORA_DB;
-    if (!composeOpen || !db) return;
+    if (!db) return;
     const load = db.members ? db.members() : db.mentors();
     load.then(list => setPickMentors(list || [])).catch(() => setPickMentors([]));
+  }, []);
+  // Anchor the sheet to the non-scrolling screen wrapper (not the scrolling
+  // list) so it always covers the viewport and the backdrop stays tappable.
+  React.useEffect(() => {
+    if (!composeOpen) return;
+    let el = listRef.current;
+    while (el && !(el.getAttribute && el.getAttribute('data-mvar'))) el = el.parentElement;
+    setComposeTarget(el || document.body);
   }, [composeOpen]);
+  React.useEffect(() => {
+    if (composeOpen && composeTarget) {
+      const id = requestAnimationFrame(() => setComposeShown(true));
+      return () => cancelAnimationFrame(id);
+    }
+  }, [composeOpen, composeTarget]);
   // ── Live conversations (Stage 5) ──
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
-  const [convos, setConvos] = React.useState(null);
+  const [convos, setConvos] = React.useState(CONVO_CACHE);
   const [prefs, setPrefs] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem('mentora_chat_prefs') || '{}'); } catch (e) { return {}; }
   });
@@ -8371,7 +9047,7 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
   const [emojiPop, setEmojiPop] = React.useState(1);
   React.useEffect(() => {
     if (!DB) return;
-    DB.conversations().then(setConvos).catch(() => setConvos([]));
+    DB.conversations().then(list => { CONVO_CACHE = list; setConvos(list); }).catch(() => setConvos([]));
   }, []);
   const prefOf = (id) => prefs[id] || {};
   const setPrefFor = (id, patch) => savePrefs({ ...prefs, [id]: { ...prefOf(id), ...patch } });
@@ -8395,6 +9071,10 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
     { id: 'group',  label: 'Class groups' },
   ];
   const threads = CHAT_THREADS.filter(t => filter === 'all' ? true : t.type === filter);
+  // Search across conversations by the other party's name.
+  const [convoQuery, setConvoQuery] = useState('');
+  const cq = convoQuery.trim().toLowerCase();
+  const matchConvo = (nm) => !cq || String(nm || '').toLowerCase().includes(cq);
 
   const threadName = (t) => t.type === 'group' ? t.title
     : (isTeacher ? t.teacherName : t.learnerName);
@@ -8423,8 +9103,15 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
     return prefix + m.text;
   };
 
+  // Member directory for the compose sheet — searchable once the roster grows.
+  const memberSource = DB ? (pickMentors || []) : MENTORS;
+  const mq = memberQuery.trim().toLowerCase();
+  const memberMatch = (m) => !mq || [m.name, m.craft, m.city].filter(Boolean).some(s => String(s).toLowerCase().includes(mq));
+  const shownMembers = memberSource.filter(memberMatch);
+  const showMemberSearch = memberSource.length > 6;
+
   return (
-    <div className="m-fade" style={{ paddingBottom: 40, fontFamily: V.fontSans, color: V.ink }}>
+    <div ref={listRef} className="m-fade" style={{ paddingBottom: 40, fontFamily: V.fontSans, color: V.ink }}>
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 12,
@@ -8458,17 +9145,20 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
       </div>
 
       {/* New-message contact sheet */}
-      {composeOpen && (
-        <div onClick={() => setComposeOpen(false)} style={{
-          position: 'absolute', inset: 0, zIndex: 40,
-          background: 'rgba(20,16,12,0.45)',
+      {composeOpen && composeTarget && ReactDOM.createPortal((
+        <div onClick={closeCompose} style={{
+          position: 'absolute', inset: 0, zIndex: 60,
+          background: composeShown ? 'rgba(20,16,12,0.45)' : 'rgba(20,16,12,0)',
+          transition: 'background 0.28s ease',
           display: 'flex', alignItems: 'flex-end',
         }}>
-          <div onClick={e => e.stopPropagation()} className="m-fade" style={{
+          <div onClick={e => e.stopPropagation()} style={{
             width: '100%', background: V.bg,
             borderRadius: '22px 22px 0 0', padding: `14px ${pad}px calc(${pad}px + 8px)`,
             maxHeight: '78%', overflowY: 'auto',
             boxShadow: '0 -8px 30px rgba(20,16,12,0.25)',
+            transform: composeShown ? 'translateY(0)' : 'translateY(100%)',
+            transition: 'transform 0.34s cubic-bezier(.22,1,.36,1)',
           }}>
             <div style={{ width: 40, height: 4, borderRadius: 100, background: V.rule,
               margin: '0 auto 14px' }} />
@@ -8478,6 +9168,26 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
               {DB ? 'Message anyone in the El Gouna community.'
                   : (isTeacher ? 'Start a chat with a student or mentor.' : 'Start a chat with a mentor.')}
             </div>
+            {showMemberSearch && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 9,
+                background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 11,
+                padding: '8px 11px', marginBottom: 12,
+              }}>
+                {Icon.search(15, V.inkMute)}
+                <input value={memberQuery} onChange={e => setMemberQuery(e.target.value)}
+                  autoFocus
+                  placeholder="Search neighbors…"
+                  style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent',
+                           color: V.ink, fontSize: 13, fontFamily: V.fontSans }} />
+                {memberQuery && (
+                  <button onClick={() => setMemberQuery('')} aria-label="Clear search" className="m-tap" style={{
+                    background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', display: 'flex' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={V.inkSoft} strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                  </button>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {DB && pickMentors === null && (
                 <div style={{ fontSize: 12.5, color: V.inkMute, padding: '8px 2px' }}>Loading members…</div>
@@ -8487,7 +9197,12 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
                   No other members to message yet.
                 </div>
               )}
-              {(DB ? (pickMentors || []) : MENTORS).map(m => (
+              {memberSource.length > 0 && shownMembers.length === 0 && (
+                <div style={{ fontSize: 12.5, color: V.inkMute, padding: '8px 2px' }}>
+                  No neighbors match “{memberQuery.trim()}”.
+                </div>
+              )}
+              {shownMembers.map(m => (
                 <button key={m.id} onClick={() => { setComposeOpen(false); onNewChat && onNewChat(DB ? m : m.id); }}
                   className="m-tap" style={{
                     display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left',
@@ -8518,7 +9233,30 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
             </div>
           </div>
         </div>
-      )}
+      ), composeTarget)}
+
+      {/* Search conversations */}
+      <div style={{ padding: `0 ${pad}px ${dense ? 10 : 12}px` }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 12,
+          padding: '9px 12px',
+          backgroundImage: V.paper ? PAPER_NOISE : undefined,
+          backgroundSize: V.paper ? '240px 240px' : undefined,
+        }}>
+          {Icon.search(16, V.inkMute)}
+          <input value={convoQuery} onChange={e => setConvoQuery(e.target.value)}
+            placeholder="Search conversations…"
+            style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent',
+                     color: V.ink, fontSize: 13.5, fontFamily: V.fontSans }} />
+          {convoQuery && (
+            <button onClick={() => setConvoQuery('')} aria-label="Clear search" className="m-tap" style={{
+              background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', display: 'flex' }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={V.inkSoft} strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Filter pills */}
       <div style={{ display: 'flex', gap: 8, padding: `0 ${pad}px ${dense ? 12 : 14}px`, overflowX: 'auto' }}>
@@ -8538,6 +9276,22 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
       {/* Threads */}
       {DB ? (
         <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {convos === null && [0, 1, 2, 3].map(i => (
+            <div key={'sk' + i} style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              background: V.surface, border: `1px solid ${V.rule}`,
+              borderRadius: 16, padding: dense ? 11 : 13,
+            }}>
+              <div style={{ width: 46, height: 46, borderRadius: '50%', flexShrink: 0,
+                background: V.rule, animation: 'm-skel 1.3s ease-in-out infinite', animationDelay: `${i * 0.12}s` }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ width: `${55 - i * 6}%`, height: 11, borderRadius: 6,
+                  background: V.rule, animation: 'm-skel 1.3s ease-in-out infinite', animationDelay: `${i * 0.12}s` }} />
+                <div style={{ width: `${80 - i * 8}%`, height: 9, borderRadius: 6, marginTop: 8,
+                  background: V.rule, animation: 'm-skel 1.3s ease-in-out infinite', animationDelay: `${i * 0.12 + 0.06}s` }} />
+              </div>
+            </div>
+          ))}
           {convos && convos.length === 0 && (
             <div style={{
               textAlign: 'center', padding: '40px 16px', color: V.inkMute, fontSize: 13,
@@ -8555,8 +9309,14 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
               No conversations yet.<br/>Tap + to message a mentor.
             </div>
           )}
+          {convos && convos.length > 0 && cq
+            && (convos.filter(c => !prefOf(c.otherId).deleted && matchConvo(c.name)).length === 0) && (
+            <div style={{ textAlign: 'center', padding: '28px 16px', color: V.inkMute, fontSize: 13 }}>
+              No chats match “{convoQuery.trim()}”.
+            </div>
+          )}
           {(convos || [])
-            .filter(c => !prefOf(c.otherId).deleted)
+            .filter(c => !prefOf(c.otherId).deleted && matchConvo(c.name))
             .slice()
             .sort((a, b) => {
               const pa = prefOf(a.otherId).pinned ? 1 : 0;
@@ -8665,7 +9425,12 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
         </div>
       ) : (
       <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {threads.map(t => {
+        {cq && threads.filter(t => matchConvo(threadName(t))).length === 0 && (
+          <div style={{ textAlign: 'center', padding: '28px 16px', color: V.inkMute, fontSize: 13 }}>
+            No chats match “{convoQuery.trim()}”.
+          </div>
+        )}
+        {threads.filter(t => matchConvo(threadName(t))).map(t => {
           const photo = threadPhoto(t);
           const avatar = threadAvatar(t);
           return (
@@ -8788,7 +9553,7 @@ function VoiceBubble({ V, src, secs, mine, mmss }) {
 // ─────────────────────────────────────────────────────────
 // CHAT THREAD — conversation view
 // ─────────────────────────────────────────────────────────
-function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj, liveOther, goBack }) {
+function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj, liveOther, liveMentors, openMentor, goBack }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   // "new" thread → synthesize a fresh empty conversation with the chosen mentor.
@@ -8822,17 +9587,30 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
   const dispName = liveOther ? liveOther.name : name;
   const dispPhoto = liveOther ? (liveOther.photo || null) : photo;
 
-  const [msgs, setMsgs] = useState(t.messages);
-  const [draft, setDraft] = useState('');
   // Live messaging target: a live conversation's other party, or a live mentor
   // chosen via "Message". Falls back to demo behaviour when absent.
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
   const liveTargetId = (liveOther && liveOther.otherId) || (newMentorObj && newMentorObj.id) || null;
   const isLiveChat = !!(DB && liveTargetId);
+  // The other party's mentor id, when they have a public profile to open from
+  // the chat header. Group chats and members who aren't in the mentor
+  // directory (i.e. learners) aren't linkable.
+  const receiverMentorId = (() => {
+    if (isGroup) return null;
+    if (liveTargetId) return ((liveMentors || []).some(m => m.id === liveTargetId)) ? liveTargetId : null;
+    const m = MENTORS.find(x => x.name === dispName || x.name === name || x.short === (dispName || '').split(' ')[0]);
+    return m ? m.id : null;
+  })();
+  const openReceiver = receiverMentorId && openMentor ? () => openMentor(receiverMentorId) : null;
+  // For a live chat, seed from the per-thread cache (instant on reopen) and
+  // never from the demo thread — so the sample conversation can't flash before
+  // the real history loads. null means "still loading".
+  const [msgs, setMsgs] = useState(isLiveChat ? (THREAD_CACHE[liveTargetId] || null) : t.messages);
+  const [draft, setDraft] = useState('');
   React.useEffect(() => {
     if (!isLiveChat) return;
     let alive = true;
-    const load = () => DB.messagesWith(liveTargetId).then(rows => { if (alive) setMsgs(rows); }).catch(() => {});
+    const load = () => DB.messagesWith(liveTargetId).then(rows => { if (alive) { THREAD_CACHE[liveTargetId] = rows; setMsgs(rows); } }).catch(() => {});
     load();
     DB.markRead(liveTargetId).catch(() => {});
     const iv = setInterval(load, 4000); // light polling for new replies
@@ -8843,7 +9621,7 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
     const text = draft.trim();
     setDraft('');
     if (isLiveChat) {
-      setMsgs(m => [...m, { id: 'tmp' + Date.now(), from: 'me', text, when: new Date().toISOString() }]);
+      setMsgs(m => [...(m || []), { id: 'tmp' + Date.now(), from: 'me', text, when: new Date().toISOString() }]);
       DB.sendMessage(liveTargetId, text)
         .then(() => DB.messagesWith(liveTargetId).then(setMsgs))
         .catch(() => {});
@@ -8878,7 +9656,7 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
   const sendImage = (dataUrl) => {
     const body = IMG_PREFIX + dataUrl;
     if (isLiveChat) {
-      setMsgs(m => [...m, { id: 'tmp' + Date.now(), from: 'me', text: body, when: new Date().toISOString() }]);
+      setMsgs(m => [...(m || []), { id: 'tmp' + Date.now(), from: 'me', text: body, when: new Date().toISOString() }]);
       DB.sendMessage(liveTargetId, body)
         .then(() => DB.messagesWith(liveTargetId).then(setMsgs))
         .catch(() => {});
@@ -8925,7 +9703,7 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
   const sendAudio = (dataUrl, secs) => {
     const body = AUD_PREFIX + secs + '::' + dataUrl;
     if (isLiveChat) {
-      setMsgs(m => [...m, { id: 'tmp' + Date.now(), from: 'me', text: body, when: new Date().toISOString() }]);
+      setMsgs(m => [...(m || []), { id: 'tmp' + Date.now(), from: 'me', text: body, when: new Date().toISOString() }]);
       DB.sendMessage(liveTargetId, body)
         .then(() => DB.messagesWith(liveTargetId).then(setMsgs))
         .catch(() => {});
@@ -8997,6 +9775,15 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
           border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: V.ink, flexShrink: 0,
         }}>{Icon.back(17)}</button>
+        {(() => {
+          const Wrap = openReceiver ? 'button' : 'div';
+          const wrapProps = openReceiver
+            ? { onClick: openReceiver, className: 'm-tap', 'aria-label': `Open ${dispName || 'profile'}`,
+                style: { display: 'flex', alignItems: 'center', gap: 11, flex: 1, minWidth: 0,
+                         background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' } }
+            : { style: { display: 'flex', alignItems: 'center', gap: 11, flex: 1, minWidth: 0 } };
+          return (
+          <Wrap {...wrapProps}>
         {dispPhoto ? (
           <img src={dispPhoto} alt="" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
         ) : headerAvatar ? (
@@ -9022,6 +9809,14 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</span>
           </div>
         </div>
+          {openReceiver && (
+            <span style={{ flexShrink: 0, color: V.inkMute, display: 'flex', marginLeft: 2 }}>
+              {Icon.chevron(15, V.inkMute)}
+            </span>
+          )}
+          </Wrap>
+          );
+        })()}
       </div>
 
       {/* Pinned class card for groups */}
@@ -9049,7 +9844,16 @@ function ChatThreadScreen({ V, dense, role, threadId, newMentorId, newMentorObj,
         padding: `${dense ? 12 : 16}px ${pad}px`,
         display: 'flex', flexDirection: 'column', gap: 8,
       }}>
-        {msgs.map((m, i) => {
+        {isLiveChat && msgs === null && (
+          <div style={{ margin: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+            <span style={{
+              width: 22, height: 22, borderRadius: '50%',
+              border: `2.5px solid ${V.rule}`, borderTopColor: V.accent,
+              animation: 'm-spin 0.7s linear infinite',
+            }} />
+          </div>
+        )}
+        {(msgs || []).map((m, i) => {
           const mine = m.from === 'me';
           return (
             <div key={i} style={{
@@ -9268,13 +10072,34 @@ function MentoraApp({ variant, os, density, scope,
 
   // ── Live Supabase auth (deployed build only; demo stays unchanged) ──
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  // Merge local fallbacks (for schemas without bio/craft columns) over the
+  // profile fetched from the backend.
+  const withLocalExtras = (p) => {
+    if (!p) return p;
+    let bio = '', craft = '';
+    try { bio = localStorage.getItem('mentora_bio') || ''; } catch (e) {}
+    try { craft = localStorage.getItem('mentora_craft') || ''; } catch (e) {}
+    return { ...p, bio: p.bio || bio, craft: p.craft || craft };
+  };
   // On load: if already signed in, jump straight to Home with the real profile.
   React.useEffect(() => {
     if (!DB || !fullScreen) return;
     DB.currentProfile().then(p => {
-      if (p) { setProfile(p); setRole(p.role || 'learner'); setScreen('home'); }
+      if (p) { setProfile(withLocalExtras(p)); setRole(p.role || 'learner'); setScreen('home'); }
     }).catch(() => {});
   }, []);
+  // Save edited profile fields: update local state instantly, back up
+  // bio/craft, and best-effort sync name/avatar/bio/craft to the backend.
+  const saveProfile = (patch) => {
+    setProfile(prev => ({ ...(prev || {}), ...patch }));
+    if (patch.bio !== undefined)   { try { localStorage.setItem('mentora_bio', patch.bio || ''); } catch (e) {} }
+    if (patch.craft !== undefined) { try { localStorage.setItem('mentora_craft', patch.craft || ''); } catch (e) {} }
+    if (DB && DB.updateProfile) {
+      const avatarUrl = patch.photoMode === 'photo' ? (patch.photoSrc || null)
+                      : (patch.avatar !== undefined ? (patch.avatar || null) : undefined);
+      DB.updateProfile({ name: patch.name, avatarUrl: avatarUrl, bio: patch.bio, craft: patch.craft }).catch(() => {});
+    }
+  };
   // Called by Register submit — real account + profile when connected, else demo.
   const handleRegister = (p) => {
     if (DB && p.email && p.password) {
@@ -9294,7 +10119,7 @@ function MentoraApp({ variant, os, density, scope,
     DB.signIn(email, password)
       .then(() => DB.currentProfile())
       .then(p => {
-        if (p) { setProfile(p); setRole(p.role || 'learner'); }
+        if (p) { setProfile(withLocalExtras(p)); setRole(p.role || 'learner'); }
         setScreen('home');
       })
       .catch(err => { if (setErr) setErr(err.message || 'Could not sign in.'); })
@@ -9376,6 +10201,7 @@ function MentoraApp({ variant, os, density, scope,
     if (screen === 'reviews')  return setScreen('mentor');
     if (screen === 'booking')  return setScreen('mentor');
     if (screen === 'mentor')   return setScreen('home');
+    if (screen === 'editProfile') return setScreen('settings');
     if (screen === 'register') return setScreen('role');
     if (screen === 'role')     return setScreen('landing');
     if (screen === 'landing')  return setScreen('welcome');
@@ -9396,16 +10222,19 @@ function MentoraApp({ variant, os, density, scope,
   };
 
   const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
-  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat' || screen === 'createCourse'; // these have their own bottom bars
+  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat' || screen === 'createCourse' || screen === 'editProfile'; // these have their own bottom bars
   // Which tab reads as active (messages screen lights the Messages tab;
   // settings screen lights the Profile tab).
   const activeTab = screen === 'messages' ? 'messages'
-                  : screen === 'settings' ? 'profile'
+                  : (screen === 'settings' || screen === 'editProfile') ? 'profile'
                   : screen;
   const userPhoto = 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?q=80&w=200&auto=format&fit=crop';
-  // Tab-bar avatar reflects the chosen profile (uploaded photo or emoji avatar).
-  const tabUserPhoto = (profile && profile.photoMode === 'photo' && profile.photoSrc) ? profile.photoSrc : userPhoto;
-  const tabUserAvatar = (profile && profile.avatar) || null;
+  // Tab-bar avatar reflects the chosen profile: an uploaded photo, the chosen
+  // emoji avatar, or — when neither was picked — the incognito fallback face
+  // (never a stock stranger's photo).
+  const tabHasPhoto = !!(profile && profile.photoMode === 'photo' && profile.photoSrc);
+  const tabUserPhoto = tabHasPhoto ? profile.photoSrc : null;
+  const tabUserAvatar = (profile && profile.avatar) || (tabHasPhoto ? null : ANON_AVATAR);
 
   const screenContent = (
     <div data-mvar={scope} style={{
@@ -9467,6 +10296,8 @@ function MentoraApp({ variant, os, density, scope,
                       profile={profile}
                       openMentor={openMentor}
                       openProfile={() => setScreen('settings')}
+                      openCourses={() => setScreen('courses')}
+                      openExplore={() => setScreen('explore')}
                       openReviews={openReviews}
                       openNotifications={openNotifications}
                       openMessages={openMessages}
@@ -9506,7 +10337,14 @@ function MentoraApp({ variant, os, density, scope,
         {screen === 'settings' && (
           <SettingsScreen V={V} dense={dense} role={role}
                           profile={profile}
+                          onEditProfile={() => setScreen('editProfile')}
                           onSignOut={handleSignOut} />
+        )}
+        {screen === 'editProfile' && (
+          <EditProfileScreen V={V} dense={dense} role={role}
+                             profile={profile}
+                             onSave={(patch) => { saveProfile(patch); setScreen('settings'); }}
+                             goBack={goBack} />
         )}
         {screen === 'booking' && (
           <BookingScreen V={V} dense={dense} mentor={mentor}
@@ -9529,6 +10367,8 @@ function MentoraApp({ variant, os, density, scope,
           <ChatThreadScreen V={V} dense={dense} role={role}
                             threadId={activeThreadId} newMentorId={newChatMentorId}
                             liveOther={activeOther}
+                            liveMentors={liveMentors}
+                            openMentor={openMentor}
                             newMentorObj={newChatMentor || (liveMentors || []).find(x => x.id === newChatMentorId) || null}
                             goBack={goBack} />
         )}
