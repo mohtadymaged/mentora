@@ -3519,6 +3519,21 @@ function AvatarWheel({ avatars, value, onChange, V, big }) {
 }
 function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, notifUnread, openMessages, openProfile, openCourses, openExplore, profile, liveCourses, enrollments }) {
   const pad = dense ? 14 : 18;
+  // Real daily streak: counts consecutive days the app is opened (localStorage).
+  const streak = React.useMemo(() => {
+    try {
+      const key = 'mentora_streak';
+      const todayStr = new Date().toLocaleDateString('en-CA');
+      const yestStr = new Date(Date.now() - 86400000).toLocaleDateString('en-CA');
+      let st = {}; try { st = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) {}
+      let n;
+      if (st.date === todayStr) n = st.n || 1;       // already counted today
+      else if (st.date === yestStr) n = (st.n || 0) + 1; // consecutive day
+      else n = 1;                                     // first time, or a gap
+      localStorage.setItem(key, JSON.stringify({ date: todayStr, n }));
+      return n;
+    } catch (e) { return 1; }
+  }, []);
 
   // User profile (the signed-in learner) — from registration, or defaults.
   const USER = {
@@ -3646,7 +3661,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, noti
               border: 'none', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
             }}>
               <span className="m-pulse" style={{ fontSize: 16, display: 'inline-block' }}>🔥</span>
-              <span className="m-serif" style={{ fontWeight: 700, fontSize: 15, color: V.terra }}>4</span>
+              <span className="m-serif" style={{ fontWeight: 700, fontSize: 15, color: V.terra }}>{streak}</span>
             </button>
           )}
           <button onClick={openNotifications} className="m-tap" style={{
@@ -3674,21 +3689,36 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, noti
         }}>
           <div style={{ position: 'absolute', right: -30, top: -30, width: 130, height: 130,
             borderRadius: '50%', background: V.accent, opacity: 0.18 }} />
-          <div style={{ position: 'relative', display: 'flex', alignItems: 'center',
-            justifyContent: 'space-between', marginBottom: 10 }}>
-            <div>
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)', fontWeight: 600, letterSpacing: '0.08em' }}>YOUR LEVEL</div>
-              <div className="m-serif" style={{ fontSize: 21, fontWeight: 700, lineHeight: 1 }}>Level 3 · Maker</div>
-            </div>
-            <div className="m-serif" style={{ fontWeight: 700, fontSize: 15, color: V.yellow }}>240/400 XP</div>
-          </div>
-          <div style={{ height: 9, borderRadius: 100, background: 'rgba(255,255,255,0.15)', overflow: 'hidden' }}>
-            <div className="m-xpfill" style={{ width: '60%', height: '100%', borderRadius: 100,
-              background: `linear-gradient(90deg, ${V.yellow}, ${V.accent})` }} />
-          </div>
-          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.65)', marginTop: 8 }}>
-            160 XP to <strong style={{ color: '#fff' }}>Level 4</strong> — finish a session to level up ⚡
-          </div>
+          {(() => {
+            const xp = (profile && profile.xp) || 0;
+            const LV = [[0, 'Newcomer'], [100, 'Explorer'], [300, 'Maker'], [600, 'Artisan'], [1000, 'Master'], [1600, 'Legend']];
+            let i = 0; for (let k = 0; k < LV.length; k++) { if (xp >= LV[k][0]) i = k; }
+            const next = LV[i + 1];
+            const curMin = LV[i][0], nextMin = next ? next[0] : curMin;
+            const pct = next ? Math.min(100, Math.round(((xp - curMin) / (nextMin - curMin)) * 100)) : 100;
+            const toNext = next ? (nextMin - xp) : 0;
+            return (
+              <React.Fragment>
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center',
+                  justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)', fontWeight: 600, letterSpacing: '0.08em' }}>YOUR LEVEL</div>
+                    <div className="m-serif" style={{ fontSize: 21, fontWeight: 700, lineHeight: 1 }}>Level {i + 1} · {LV[i][1]}</div>
+                  </div>
+                  <div className="m-serif" style={{ fontWeight: 700, fontSize: 15, color: V.yellow }}>{next ? `${xp}/${nextMin} XP` : `${xp} XP`}</div>
+                </div>
+                <div style={{ height: 9, borderRadius: 100, background: 'rgba(255,255,255,0.15)', overflow: 'hidden' }}>
+                  <div className="m-xpfill" style={{ width: pct + '%', height: '100%', borderRadius: 100,
+                    background: `linear-gradient(90deg, ${V.yellow}, ${V.accent})` }} />
+                </div>
+                <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.65)', marginTop: 8 }}>
+                  {next
+                    ? <React.Fragment>{toNext} XP to <strong style={{ color: '#fff' }}>Level {i + 2}</strong> — take part to level up ⚡</React.Fragment>
+                    : <React.Fragment>Top level reached — you're a <strong style={{ color: '#fff' }}>Legend</strong> ⚡</React.Fragment>}
+                </div>
+              </React.Fragment>
+            );
+          })()}
         </div>
       ) : (
         <div style={{
@@ -3700,7 +3730,7 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, noti
         }}>
           <span style={{ fontSize: 18 }}>☕</span>
           <div style={{ flex: 1, fontSize: 12.5, color: V.ink, lineHeight: 1.4 }}>
-            You're on a <strong style={{ color: V.ink }}>4-day streak</strong>.
+            You're on a <strong style={{ color: V.ink }}>{streak}-day streak</strong>.
             One short lesson keeps it going.
           </div>
         </div>
@@ -5882,18 +5912,19 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
   );
 
   const Toggle = ({ on, onClick }) => (
-    <button onClick={onClick} style={{
-      width: 38, height: 22, borderRadius: 100,
-      background: on ? V.accent : 'rgba(60,40,20,0.18)',
-      border: 'none', position: 'relative', padding: 0, cursor: 'pointer',
-      transition: 'background .2s ease',
+    <button onClick={onClick} aria-pressed={on} style={{
+      width: 46, height: 27, borderRadius: 100,
+      background: on ? V.accent : 'rgba(60,40,20,0.16)',
+      border: 'none', position: 'relative', padding: 0, cursor: 'pointer', flexShrink: 0,
+      boxShadow: on ? `inset 0 0 0 1px ${V.accent}, 0 1px 4px ${V.accent}33` : 'inset 0 0 0 1px rgba(60,40,20,0.06)',
+      transition: 'background .28s cubic-bezier(.34,1.56,.64,1), box-shadow .28s ease',
     }}>
       <span style={{
-        position: 'absolute', top: 2,
-        left: on ? 18 : 2,
-        width: 18, height: 18, borderRadius: '50%', background: '#fffaf0',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-        transition: 'left .2s ease',
+        position: 'absolute', top: 3, left: 3,
+        width: 21, height: 21, borderRadius: '50%', background: '#fffaf0',
+        boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+        transform: on ? 'translateX(19px)' : 'translateX(0)',
+        transition: 'transform .32s cubic-bezier(.34,1.56,.64,1)',
       }} />
     </button>
   );
@@ -5986,21 +6017,21 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
       }}>
         <SettingsGroupHead V={V} pad={pad}>Account</SettingsGroupHead>
         {isTeacher
-          ? <Row icon={<span style={{ fontSize: 15 }}>💰</span>} label="Payouts & banking" value="May 15" onClick={() => openSub && openSub('payouts')} />
-          : <Row icon={<span style={{ fontSize: 15 }}>💳</span>} label="Payment method" onClick={() => openSub && openSub('payment')} />
+          ? <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 4l9 5.5"/><path d="M4 10v8M9 10v8M15 10v8M20 10v8M2.5 21h19"/></svg>} label="Payouts & banking" value="May 15" onClick={() => openSub && openSub('payouts')} />
+          : <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg>} label="Payment method" onClick={() => openSub && openSub('payment')} />
         }
         <DividerRow V={V} />
         {!isTeacher && (
           <>
-            <Row icon={<span style={{ fontSize: 15 }}>🧾</span>} label="Purchase history" onClick={() => openSub && openSub('purchases')} />
+            <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 3v18l2-1.4 2 1.4 2-1.4 2 1.4 2-1.4 2 1.4V3l-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4L7 4.4 5 3Z"/><path d="M9 8h6M9 12h6"/></svg>} label="Purchase history" onClick={() => openSub && openSub('purchases')} />
             <DividerRow V={V} />
           </>
         )}
-        <Row icon={<span style={{ fontSize: 15 }}>🔒</span>} label="Password & security" onClick={() => openSub && openSub('password')} />
+        <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>} label="Password & security" onClick={() => openSub && openSub('password')} />
         {profile && profile.accountType === 'family' && (
           <>
             <DividerRow V={V} />
-            <Row icon={<span style={{ fontSize: 15 }}>👨‍👧</span>} label="Family & kids" onClick={() => openSub && openSub('family')} />
+            <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="3.5"/><path d="M22 21v-2a4 4 0 0 0-3-3.86M16 3.13a4 4 0 0 1 0 7.75"/></svg>} label="Family & kids" onClick={() => openSub && openSub('family')} />
           </>
         )}
       </div>
@@ -6042,9 +6073,9 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
         <SettingsGroupHead V={V} pad={pad}>Support</SettingsGroupHead>
-        <Row icon={<span style={{ fontSize: 15 }}>💬</span>} label="Help & community guidelines" onClick={() => openSub && openSub('help')} />
+        <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>} label="Help & community guidelines" onClick={() => openSub && openSub('help')} />
         <DividerRow V={V} />
-        <Row icon={<span style={{ fontSize: 15 }}>📜</span>} label="Terms & privacy" onClick={() => openSub && openSub('terms')} />
+        <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>} label="Terms & privacy" onClick={() => openSub && openSub('terms')} />
         <DividerRow V={V} />
         <Row icon={Icon.logout(15, '#b5462e')} label="Sign out" danger onClick={onSignOut} />
       </div>
@@ -6119,15 +6150,18 @@ function brandFromNumber(num) {
   return 'card';
 }
 
+// Cross-mount caches so re-opening these screens paints instantly while fresh
+// data loads in the background (no split-second loading flash).
+let SUB_CACHE = { pm: null, purch: null, notif: null };
 function PaymentMethodsScreen({ V, dense, goBack }) {
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
-  const [cards, setCards] = React.useState(DB ? null : []);
+  const [cards, setCards] = React.useState(SUB_CACHE.pm || (DB ? null : []));
   const [adding, setAdding] = React.useState(false);
   const [num, setNum] = React.useState(''); const [exp, setExp] = React.useState(''); const [holder, setHolder] = React.useState('');
   const [busy, setBusy] = React.useState(false); const [err, setErr] = React.useState('');
   const load = React.useCallback(() => {
     if (!DB) { setCards([]); return; }
-    DB.paymentMethods().then(setCards).catch(() => setCards([]));
+    DB.paymentMethods().then(d => { SUB_CACHE.pm = d; setCards(d); }).catch(() => setCards(c => c || []));
   }, [DB]);
   React.useEffect(() => { load(); }, [load]);
 
@@ -6156,7 +6190,7 @@ function PaymentMethodsScreen({ V, dense, goBack }) {
         <div style={{ color: V.inkMute, fontSize: 13, padding: '20px 2px' }}>Loading…</div>
       ) : cards.length === 0 && !adding ? (
         <div style={{ textAlign: 'center', padding: '32px 16px 20px' }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>💳</div>
+          <div style={{ width: 56, height: 56, borderRadius: '50%', margin: '0 auto 12px', background: V.accentBg, color: V.accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg></div>
           <div className="m-serif" style={{ fontSize: 16, marginBottom: 4 }}>No cards saved</div>
           <div style={{ fontSize: 12.5, color: V.inkMute }}>Add a card to enrol in paid classes faster.</div>
         </div>
@@ -6255,10 +6289,10 @@ function PayoutsScreen({ V, dense, goBack }) {
 
 function PurchaseHistoryScreen({ V, dense, goBack }) {
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
-  const [rows, setRows] = React.useState(DB ? null : []);
+  const [rows, setRows] = React.useState(SUB_CACHE.purch || (DB ? null : []));
   React.useEffect(() => {
     if (!DB) return;
-    DB.myEnrollments().then(setRows).catch(() => setRows([]));
+    DB.myEnrollments().then(d => { SUB_CACHE.purch = d; setRows(d); }).catch(() => setRows(r => r || []));
   }, [DB]);
   const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) { return ''; } };
   const priceOf = (c) => (c && (c.price != null) ? c.price : 0);
@@ -6269,7 +6303,7 @@ function PurchaseHistoryScreen({ V, dense, goBack }) {
         <div style={{ color: V.inkMute, fontSize: 13, padding: '20px 2px' }}>Loading…</div>
       ) : rows.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '32px 16px' }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>🧾</div>
+          <div style={{ width: 56, height: 56, borderRadius: '50%', margin: '0 auto 12px', background: V.accentBg, color: V.accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 3v18l2-1.4 2 1.4 2-1.4 2 1.4 2-1.4 2 1.4V3l-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4L7 4.4 5 3Z"/><path d="M9 8h6M9 12h6"/></svg></div>
           <div className="m-serif" style={{ fontSize: 16, marginBottom: 4 }}>Nothing yet</div>
           <div style={{ fontSize: 12.5, color: V.inkMute }}>Classes you enrol in will show up here.</div>
         </div>
@@ -8721,8 +8755,8 @@ function LoginScreen({ V, dense, os, onLogin, goBack, busy }) {
 // ─────────────────────────────────────────────────────────
 function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
   const [form, setForm] = useState({
-    name: role === 'teacher' ? 'Layla Marwan' : 'Omar Khalil',
-    email: role === 'teacher' ? 'layla@example.com' : 'omar@example.com',
+    name: '',
+    email: '',
     password: '',
     craft: '',
     unit: '',
@@ -8780,7 +8814,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
           <input
             type={inputType || type}
             value={value}
-            placeholder={name === 'password' ? 'Create a password' : undefined}
+            placeholder={({ name: 'e.g. Omar Khalil', email: 'you@email.com', password: 'Create a password', unit: 'e.g. A-12', zone: 'e.g. 3', age: 'Your age' })[name]}
             onChange={e => setForm(f => ({ ...f, [name]: e.target.value }))}
             onFocus={() => setFocus(name)} onBlur={() => setFocus(null)}
             style={{
@@ -9175,9 +9209,10 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
             pointerEvents: 'none',
           }} />
           <style>{`@keyframes btn-sweep {
-            0%   { transform: translateX(0); }
-            60%  { transform: translateX(280%); }
-            100% { transform: translateX(280%); }
+            0%   { transform: translateX(-60%); opacity: 0; }
+            10%  { opacity: 1; }
+            40%  { transform: translateX(280%); opacity: 1; }
+            50%, 100% { transform: translateX(280%); opacity: 0; }
           }`}</style>
           <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             {isTeacher ? 'Open my studio' : 'Step inside'} {Icon.arrow(17, '#fffaf0')}
@@ -9730,13 +9765,13 @@ function NotificationsScreen({ V, dense, role, goBack, openChat, openLiveChat })
   const demo = NOTIFICATIONS[role === 'teacher' ? 'teacher' : 'learner'];
   // Live feed (self-populated by DB triggers) when signed in; demo list otherwise.
   // null = still loading the live feed.
-  const [items, setItems] = useState(DB ? null : demo);
+  const [items, setItems] = useState(SUB_CACHE.notif || (DB ? null : demo));
   React.useEffect(() => {
     if (!DB) return;
     let alive = true;
     DB.notifications()
-      .then(rows => { if (alive) setItems(rows); })
-      .catch(() => { if (alive) setItems([]); });
+      .then(rows => { if (alive) { SUB_CACHE.notif = rows; setItems(rows); } })
+      .catch(() => { if (alive) setItems(x => x || []); });
     return () => { alive = false; };
   }, []);
   const loading = items === null;
