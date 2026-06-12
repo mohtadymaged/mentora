@@ -12102,12 +12102,21 @@ function MentoraApp({ variant, os, density, scope,
     return { ...p, bio: p.bio || bio, craft: p.craft || craft };
   };
   // On load: if already signed in, jump straight to Home with the real profile.
+  // When showing the splash, keep it up for a minimum dwell time so it doesn't
+  // flicker past — feels like an intentional launch screen.
   React.useEffect(() => {
     if (!DB || !fullScreen) return;
+    const startedOnSplash = screen === 'splash';
+    const MIN_SPLASH_MS = 2000;
+    const t0 = Date.now();
+    const settle = (fn) => {
+      const wait = startedOnSplash ? Math.max(0, MIN_SPLASH_MS - (Date.now() - t0)) : 0;
+      setTimeout(fn, wait);
+    };
     DB.currentProfile().then(p => {
-      if (p) { setProfile(withLocalExtras(p)); setRole(p.role || 'learner'); setScreen('home'); }
-      else { setScreen(s => s === 'splash' ? 'welcome' : s); }
-    }).catch(() => { setScreen(s => s === 'splash' ? 'welcome' : s); });
+      if (p) { setProfile(withLocalExtras(p)); setRole(p.role || 'learner'); settle(() => setScreen('home')); }
+      else { settle(() => setScreen(s => s === 'splash' ? 'welcome' : s)); }
+    }).catch(() => { settle(() => setScreen(s => s === 'splash' ? 'welcome' : s)); });
   }, []);
   // Save edited profile fields: update local state instantly, back up
   // bio/craft, and best-effort sync name/avatar/bio/craft to the backend.
