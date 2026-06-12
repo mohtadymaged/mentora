@@ -9922,6 +9922,78 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// COURSE DETAIL — read-only details for an already-enrolled course
+// (name, place, sessions, schedule, level, mentor). No payment.
+// ─────────────────────────────────────────────────────────
+function CourseDetailScreen({ V, dense, course, mentor, goBack, onMessage, openMentor }) {
+  const c = course || {};
+  const m = mentor || {};
+  const Row = ({ icon, label, value }) => value ? (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '13px 0', borderBottom: `1px solid ${V.rule}` }}>
+      <div style={{ width: 34, height: 34, borderRadius: 10, background: V.accentBg, color: V.accent, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17 }}>{icon}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 10.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: V.inkMute, fontWeight: 700 }}>{label}</div>
+        <div style={{ fontSize: 14.5, color: V.ink, marginTop: 3, lineHeight: 1.35 }}>{value}</div>
+      </div>
+    </div>
+  ) : null;
+  const place = [c.venue, c.area].filter(Boolean).join(' · ') || 'El Gouna';
+  const mentorName = m.name || m.short || (m.full_name) || 'Your mentor';
+  return (
+    <SubScreen V={V} dense={dense} eyebrow="your class —" title="Course details" goBack={goBack}>
+      {/* Hero */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+        <div style={{ width: 64, height: 64, borderRadius: 16, background: V.accentBg, flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 34 }}>{c.emoji || '📚'}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="m-serif" style={{ fontSize: 22, color: V.ink, lineHeight: 1.1, fontWeight: V.polaroid ? 500 : 400 }}>{c.title || 'Course'}</div>
+          <div style={{ marginTop: 5, display: 'inline-flex', alignItems: 'center', gap: 6, background: V.accent, color: '#fffaf0',
+            fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '4px 10px', borderRadius: 100 }}>
+            {Icon.check(12, '#fffaf0')} Enrolled
+          </div>
+        </div>
+      </div>
+
+      {c.description && (
+        <div style={{ fontSize: 13.5, color: V.inkSoft, lineHeight: 1.6, marginBottom: 12 }}>{c.description}</div>
+      )}
+
+      {/* Details */}
+      <div style={{ background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 16, padding: '2px 16px', marginBottom: 16,
+        backgroundImage: V.paper ? PAPER_NOISE : undefined, backgroundSize: V.paper ? '240px 240px' : undefined }}>
+        <Row icon="🧑‍🏫" label="Mentor" value={mentorName} />
+        <Row icon="📍" label="Where" value={place} />
+        <Row icon="🗓️" label="Schedule" value={c.schedule} />
+        <Row icon="📚" label="Sessions" value={c.lessons ? `${c.lessons} session${c.lessons === 1 ? '' : 's'}` : null} />
+        <Row icon="🎯" label="Level" value={c.level} />
+        <Row icon="💳" label="Price paid" value={(c.price != null) ? (c.price === 0 ? 'Free' : `£E ${c.price}`) : null} />
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {onMessage && (
+          <button onClick={() => onMessage(m)} className="m-tap" style={{
+            width: '100%', background: V.accent, color: '#fffaf0', border: 'none', borderRadius: 14,
+            padding: '14px 0', fontSize: 14.5, fontWeight: 700, cursor: 'pointer', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            Message {m.short || 'mentor'} {Icon.arrow(16, '#fffaf0')}
+          </button>
+        )}
+        {openMentor && c.mentor_id && (
+          <button onClick={() => openMentor(c.mentor_id)} className="m-tap" style={{
+            width: '100%', background: 'transparent', color: V.accent, border: `1.5px solid ${V.rule}`, borderRadius: 14,
+            padding: '13px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+            View mentor profile
+          </button>
+        )}
+      </div>
+      <div className="m-hand" style={{ textAlign: 'center', marginTop: 18, color: V.inkMute, fontSize: 15 }}>— see you at the studio —</div>
+    </SubScreen>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
 // ENROLL SCREEN — course enrollment checkout + confirmation
 // (Reuses the 'booking' screen slot.)
 // ─────────────────────────────────────────────────────────
@@ -11888,9 +11960,10 @@ function MentoraApp({ variant, os, density, scope,
         window.MENTORA_DB.mentorCourses(courseObj.mentor_id).then(setLiveMentorCourses).catch(() => setLiveMentorCourses([]));
       }
     }
-    setScreen('booking');
+    setScreen('courseDetail');
   };
   const [activeThreadId, setActiveThreadId] = useState('t1');
+  const [chatOrigin, setChatOrigin] = useState(null);   // screen to return to from a 1:1 chat ('messages' by default)
   const [activeGroup, setActiveGroup] = useState(null);
   const [newChatMentorId, setNewChatMentorId] = useState(null);
   // Full member object chosen from the "+" sheet (covers non-teacher members).
@@ -11927,7 +12000,7 @@ function MentoraApp({ variant, os, density, scope,
   // Refresh on load and whenever the screen changes (the feed marks itself read
   // on open, so leaving it clears the dot).
   React.useEffect(() => { refreshNotifUnread(); }, [refreshNotifUnread, screen]);
-  const openConversation = (convo) => { setActiveOther(convo); setNewChatMentorId(null); setActiveThreadId('conv'); setScreen('chat'); };
+  const openConversation = (convo) => { setChatOrigin('messages'); setActiveOther(convo); setNewChatMentorId(null); setActiveThreadId('conv'); setScreen('chat'); };
   const [returnTab, setReturnTab] = useState('home');
   const [profile, setProfile] = useState(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -12090,6 +12163,7 @@ function MentoraApp({ variant, os, density, scope,
   // (from the Messages "+" sheet, which may be any community member, not just a teacher).
   const openNewChat = (arg) => {
     setActiveOther(null);
+    setChatOrigin(screen);   // remember where we came from so back returns here
     if (arg && typeof arg === 'object') {
       setNewChatMentor(arg);
       setNewChatMentorId(arg.id);
@@ -12102,6 +12176,7 @@ function MentoraApp({ variant, os, density, scope,
   };
   const goBack = () => {
     if (screen === 'reviews')  return setScreen('mentor');
+    if (screen === 'courseDetail') return setScreen(returnTab === 'courses' ? 'courses' : 'home');
     if (screen === 'booking')  return setScreen('mentor');
     if (screen === 'mentor')   return setScreen('home');
     if (screen === 'editProfile') return setScreen('settings');
@@ -12112,7 +12187,7 @@ function MentoraApp({ variant, os, density, scope,
     if (screen === 'landing')  return setScreen('welcome');
     if (screen === 'notifications') return setScreen(returnTab);
     if (screen === 'messages')      return setScreen(returnTab);
-    if (screen === 'chat')          return setScreen('messages');
+    if (screen === 'chat')          return setScreen(chatOrigin || 'messages');
     if (screen === 'group')         return setScreen('messages');
     return setScreen('home');
   };
@@ -12128,7 +12203,7 @@ function MentoraApp({ variant, os, density, scope,
   };
 
   const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
-  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'chat' || screen === 'group' || screen === 'createCourse' || screen === 'editProfile' || screen === 'payment' || screen === 'addCard' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family'; // these have their own bottom bars
+  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'courseDetail' || screen === 'chat' || screen === 'group' || screen === 'createCourse' || screen === 'editProfile' || screen === 'payment' || screen === 'addCard' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family'; // these have their own bottom bars
   // Which tab reads as active (messages screen lights the Messages tab;
   // settings screen lights the Profile tab).
   const activeTab = screen === 'messages' ? 'messages'
@@ -12270,6 +12345,10 @@ function MentoraApp({ variant, os, density, scope,
                              profile={profile}
                              onSave={(patch) => { saveProfile(patch); setScreen('settings'); }}
                              goBack={goBack} />
+        )}
+        {screen === 'courseDetail' && (
+          <CourseDetailScreen V={V} dense={dense} course={activeCourse} mentor={mentor}
+                              goBack={goBack} onMessage={openNewChat} openMentor={openMentor} />
         )}
         {screen === 'booking' && (
           <BookingScreen V={V} dense={dense} mentor={mentor}
