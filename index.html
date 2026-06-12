@@ -768,10 +768,18 @@ window.MENTORA_SUPABASE = {
     async enroll(courseId, level, forMember) {
       const { data: { session } } = await sb.auth.getSession();
       if (!session) throw new Error("Please sign in again.");
-      const base = { course_id: courseId, learner_id: session.user.id, level: level || null };
-      let { error } = await sb.from("enrollments").insert(Object.assign({}, base, forMember ? { for_member: forMember } : {}));
-      if (error && forMember && /for_member/.test(error.message || "")) {
-        ({ error } = await sb.from("enrollments").insert(base)); // retry without optional column
+      let row = { course_id: courseId, learner_id: session.user.id };
+      if (level) row.level = level;
+      if (forMember) row.for_member = forMember;
+      let { error } = await sb.from("enrollments").insert(row);
+      // Some deployments lack optional columns (level / for_member) — drop & retry.
+      let _guard = 0;
+      while (error && _guard++ < 3) {
+        const m = error.message || "";
+        if (/level/.test(m) && "level" in row) { delete row.level; }
+        else if (/for_member/.test(m) && "for_member" in row) { delete row.for_member; }
+        else break;
+        ({ error } = await sb.from("enrollments").insert(row));
       }
       if (error) {
         if (error.code === "23505") throw new Error("You're already enrolled in this class.");
@@ -6609,10 +6617,23 @@ function PaymentSheet({ V, method, amount, merchant, card, onSuccess, onClose })
   const ink = dark ? '#fdf6ec' : V.ink;
   const sub = dark ? 'rgba(253,246,236,0.6)' : V.inkMute;
   const go = () => { setPhase('processing'); setTimeout(() => { setPhase('done'); setTimeout(onSuccess, 850); }, 1500); };
+  const [phone, setPhone] = React.useState('');
+  const [sent, setSent] = React.useState(false);
+  const phoneOk = phone.replace(/\D/g, '').length === 11;
+  const anchorRef = React.useRef(null);
+  const [target, setTarget] = React.useState(null);
+  React.useEffect(() => {
+    let el = anchorRef.current;
+    while (el && !(el.getAttribute && el.getAttribute('data-mvar'))) el = el.parentElement;
+    setTarget(el || document.body);
+  }, []);
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'flex-end', background: 'rgba(20,14,9,0.55)' }}>
+    <React.Fragment>
+      <span ref={anchorRef} style={{ display: 'none' }} />
+      {target && ReactDOM.createPortal((
+    <div onClick={onClose} style={{ position: 'absolute', inset: 0, zIndex: 200, display: 'flex', alignItems: 'flex-end', background: 'rgba(20,14,9,0.55)' }}>
       <div onClick={e => e.stopPropagation()} className="m-sheet" style={{ width: '100%', background: dark ? '#1b1714' : V.bg, color: ink,
-        borderRadius: '24px 24px 0 0', padding: '16px 20px 30px', boxShadow: '0 -12px 40px rgba(0,0,0,0.32)' }}>
+        borderRadius: '24px 24px 0 0', padding: '14px 20px calc(18px + env(safe-area-inset-bottom))', maxHeight: '88%', overflowY: 'auto', boxShadow: '0 -12px 40px rgba(0,0,0,0.32)' }}>
         <style>{`@keyframes m-sheetup{from{transform:translateY(100%)}to{transform:translateY(0)}} .m-sheet{animation:m-sheetup .32s cubic-bezier(.22,1,.36,1)}`}</style>
         <div style={{ width: 40, height: 4, borderRadius: 100, background: dark ? 'rgba(255,255,255,0.22)' : V.rule, margin: '0 auto 16px' }}/>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
@@ -6628,35 +6649,44 @@ function PaymentSheet({ V, method, amount, merchant, card, onSuccess, onClose })
             <div style={{ fontSize: 17, fontWeight: 600 }}>{method === 'fawry' ? 'Seat reserved' : 'Payment approved'}</div>
             <div style={{ fontSize: 13, color: sub, marginTop: 4 }}>Enrolling you now…</div>
           </div>
+        ) : phase === 'processing' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '14px 0 8px' }}>
+            {(method === 'apple' || method === 'google') ? <FaceID dark={dark} /> : <span style={{ width: 26, height: 26, border: `2.5px solid ${V.rule}`, borderTopColor: V.accent, borderRadius: '50%', display: 'inline-block', animation: 'm-spin 0.7s linear infinite' }} />}
+            <div style={{ fontSize: 13, color: sub }}>{method === 'fawry' ? 'Reserving your seat…' : (method === 'apple' ? 'Confirming with Face ID…' : 'Confirming…')}</div>
+          </div>
         ) : method === 'fawry' ? (
+          !sent ? (
           <div>
-            <div style={{ fontSize: 13, color: sub, marginBottom: 14, lineHeight: 1.55 }}>Pay this reference at any <b style={{ color: ink }}>Fawry</b> outlet or in the Fawry app within 48 hours — your seat is held until then.</div>
+            <div style={{ fontSize: 13, color: sub, marginBottom: 14, lineHeight: 1.55 }}>Enter your mobile number — we'll text your <b style={{ color: ink }}>Fawry</b> code to pay at any outlet or in the Fawry app.</div>
+            <div style={{ fontSize: 11, letterSpacing: '0.04em', color: V.inkMute, fontWeight: 600, marginBottom: 7 }}>Mobile number</div>
+            <input value={phone} onChange={e => setPhone(e.target.value.replace(/[^\d]/g, '').slice(0, 11))} inputMode="tel" placeholder="01X XXXX XXXX" style={{ width: '100%', boxSizing: 'border-box', background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 12, padding: '13px 15px', fontSize: 15, color: V.ink, outline: 'none', fontFamily: V.fontSans, letterSpacing: '0.06em', marginBottom: 16 }} />
+            <button onClick={() => setSent(true)} disabled={!phoneOk} className="m-tap" style={{ width: '100%', background: V.accent, color: '#fff', border: 'none', borderRadius: 14, padding: '15px 0', fontSize: 15, fontWeight: 600, cursor: 'pointer', opacity: phoneOk ? 1 : 0.5 }}>Get my Fawry code</button>
+          </div>
+          ) : (
+          <div>
+            <div style={{ fontSize: 13, color: sub, marginBottom: 14, lineHeight: 1.55 }}>Code sent to <b style={{ color: ink }}>{phone}</b>. Pay it at any <b style={{ color: ink }}>Fawry</b> outlet or in the Fawry app within 48 hours — your seat is held until then.</div>
             <div style={{ background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 14, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
               <div><div style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: V.inkMute }}>Fawry code</div><div style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 22, fontWeight: 700, color: V.ink, letterSpacing: '0.08em', marginTop: 3 }}>{ref}</div></div>
               <div style={{ textAlign: 'right' }}><div style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: V.inkMute }}>Amount</div><div style={{ fontSize: 18, fontWeight: 700, color: V.ink, marginTop: 3 }}>${amount}</div></div>
             </div>
             <button onClick={go} className="m-tap" style={{ width: '100%', background: V.accent, color: '#fff', border: 'none', borderRadius: 14, padding: '15px 0', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Reserve my seat</button>
           </div>
+          )
         ) : (
           <div>
             <div style={{ fontSize: 13.5, color: sub, marginBottom: 10 }}>{merchant}</div>
             {card && <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', borderTop: `1px solid ${dark ? 'rgba(255,255,255,0.08)' : V.rule}`, borderBottom: `1px solid ${dark ? 'rgba(255,255,255,0.08)' : V.rule}`, marginBottom: 14 }}>
               <div style={{ background: '#fff', borderRadius: 5, padding: '3px 6px', display: 'flex' }}><CardBrandLogo brand={card.brand} h={15} /></div><span style={{ fontSize: 13 }}>•••• {card.last4}</span></div>}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 18 }}><span style={{ fontSize: 14 }}>Total</span><span style={{ fontSize: 22, fontWeight: 700 }}>${amount}</span></div>
-            {phase === 'processing' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '6px 0 4px' }}>
-                <FaceID dark={dark} />
-                <div style={{ fontSize: 13, color: sub }}>{method === 'apple' ? 'Confirming with Face ID…' : 'Confirming…'}</div>
-              </div>
-            ) : (
-              <button onClick={go} className="m-tap" style={{ width: '100%', background: dark ? '#fff' : '#000', color: dark ? '#000' : '#fff', border: 'none', borderRadius: 14, padding: '15px 0', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>
-                {method === 'apple' ? 'Confirm with Face ID' : 'Confirm payment'}
-              </button>
-            )}
+            <button onClick={go} className="m-tap" style={{ width: '100%', background: dark ? '#fff' : '#000', color: dark ? '#000' : '#fff', border: 'none', borderRadius: 14, padding: '15px 0', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>
+              {method === 'apple' ? 'Confirm with Face ID' : 'Confirm payment'}
+            </button>
           </div>
         )}
       </div>
     </div>
+      ), target)}
+    </React.Fragment>
   );
 }
 // Tap-to-learn sheet for the wallet tiles on the Payment methods screen.
@@ -6666,10 +6696,20 @@ function WalletInfoSheet({ V, method, onClose }) {
     google: { name: 'Google Pay', body: "Pay with the cards saved to your Google account. Choose Google Pay at checkout and confirm in a tap." },
     fawry: { name: 'Fawry', body: "No card? Choose Fawry at checkout and we'll give you a reference number. Pay cash at any Fawry outlet or in the Fawry app within 48 hours — your seat is held until then." },
   }[method];
+  const anchorRef = React.useRef(null);
+  const [target, setTarget] = React.useState(null);
+  React.useEffect(() => {
+    let el = anchorRef.current;
+    while (el && !(el.getAttribute && el.getAttribute('data-mvar'))) el = el.parentElement;
+    setTarget(el || document.body);
+  }, []);
   if (!meta) return null;
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'flex-end', background: 'rgba(20,14,9,0.5)' }}>
-      <div onClick={e => e.stopPropagation()} className="m-sheet" style={{ width: '100%', background: V.bg, borderRadius: '24px 24px 0 0', padding: '16px 20px 30px', boxShadow: '0 -12px 40px rgba(0,0,0,0.3)' }}>
+    <React.Fragment>
+      <span ref={anchorRef} style={{ display: 'none' }} />
+      {target && ReactDOM.createPortal((
+    <div onClick={onClose} style={{ position: 'absolute', inset: 0, zIndex: 200, display: 'flex', alignItems: 'flex-end', background: 'rgba(20,14,9,0.5)' }}>
+      <div onClick={e => e.stopPropagation()} className="m-sheet" style={{ width: '100%', background: V.bg, borderRadius: '24px 24px 0 0', padding: '14px 20px calc(18px + env(safe-area-inset-bottom))', maxHeight: '88%', overflowY: 'auto', boxShadow: '0 -12px 40px rgba(0,0,0,0.3)' }}>
         <style>{`@keyframes m-sheetup{from{transform:translateY(100%)}to{transform:translateY(0)}} .m-sheet{animation:m-sheetup .32s cubic-bezier(.22,1,.36,1)}`}</style>
         <div style={{ width: 40, height: 4, borderRadius: 100, background: V.rule, margin: '0 auto 16px' }}/>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -6678,10 +6718,12 @@ function WalletInfoSheet({ V, method, onClose }) {
           {method === 'fawry' && <FawryMark h={15} />}
           <div style={{ fontWeight: 700, fontSize: 16, color: V.ink }}>{meta.name}</div>
         </div>
-        <div style={{ fontSize: 13.5, color: V.inkSoft, lineHeight: 1.6, marginBottom: 18 }}>{meta.body}</div>
+        <div style={{ fontSize: 13.5, color: V.inkSoft, lineHeight: 1.6, marginBottom: 14 }}>{meta.body}</div>
         <button onClick={onClose} className="m-tap" style={{ width: '100%', background: V.accent, color: '#fff', border: 'none', borderRadius: 14, padding: '14px 0', fontSize: 14.5, fontWeight: 700, cursor: 'pointer' }}>Got it</button>
       </div>
     </div>
+      ), target)}
+    </React.Fragment>
   );
 }
 
@@ -9684,7 +9726,7 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll
   return (
     <div data-screen-label="Enroll" className="m-fade" style={{
       minHeight: '100%', display: 'flex', flexDirection: 'column',
-      fontFamily: V.fontSans, color: V.ink, paddingBottom: 110,
+      fontFamily: V.fontSans, color: V.ink,
     }}>
       {/* Top bar */}
       <div style={{
@@ -9992,9 +10034,9 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll
 
       {/* Sticky confirm bar */}
       <div style={{
-        position: 'absolute', left: 0, right: 0, bottom: 0,
+        position: 'sticky', bottom: 0, marginTop: 'auto', zIndex: 5,
         background: V.surface, borderTop: `1px solid ${V.rule}`,
-        padding: `14px ${pad}px 28px`,
+        padding: `14px ${pad}px calc(20px + env(safe-area-inset-bottom))`,
         backgroundImage: V.paper ? PAPER_NOISE : undefined,
         backgroundSize: V.paper ? '240px 240px' : undefined,
       }}>
