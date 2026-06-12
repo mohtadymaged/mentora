@@ -6658,15 +6658,54 @@ const FaceID = ({ dark }) => (
     </div>
   </React.Fragment>
 );
+// Apple-Pay-style Face ID confirmation that drops down from the dynamic island
+// at the top of the screen (authentic iOS double-click-to-pay moment).
+function FaceIDDrop({ done }) {
+  return (
+    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, display: 'flex', justifyContent: 'center',
+      pointerEvents: 'none', zIndex: 320 }}>
+      <style>{`
+        @keyframes m-fiddrop{0%{transform:translateY(-150%) scale(.55);opacity:0}55%{transform:translateY(8%) scale(1.03);opacity:1}100%{transform:translateY(0) scale(1);opacity:1}}
+        @keyframes m-fidscan{0%,100%{opacity:.4}50%{opacity:1}}
+        @keyframes m-fidpop{0%{transform:scale(.3);opacity:0}65%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
+      `}</style>
+      <div style={{ marginTop: 'calc(9px + env(safe-area-inset-top))', background: '#000', color: '#fff',
+        borderRadius: 24, padding: '11px 18px 11px 13px', display: 'flex', alignItems: 'center', gap: 13,
+        minWidth: 220, boxShadow: '0 16px 44px rgba(0,0,0,0.55), inset 0 0 0 0.5px rgba(255,255,255,0.08)',
+        animation: 'm-fiddrop .52s cubic-bezier(.22,1.15,.36,1) both' }}>
+        {done ? (
+          <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#1f8a5b', flexShrink: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'm-fidpop .34s ease both' }}>{Icon.check(23, '#fff')}</div>
+        ) : (
+          <div style={{ width: 40, height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'm-fidscan 1s ease-in-out infinite' }}>
+            <svg width="38" height="38" viewBox="0 0 48 48" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 16V10a4 4 0 0 1 4-4h6M32 6h6a4 4 0 0 1 4 4v6M42 32v6a4 4 0 0 1-4 4h-6M16 42h-6a4 4 0 0 1-4-4v-6"/>
+              <path d="M18 20v3M30 20v3M24 20v6l-2 2"/><path d="M18 31c2.5 2 9.5 2 12 0"/>
+            </svg>
+          </div>
+        )}
+        <div style={{ lineHeight: 1.25, paddingRight: 4 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 600 }}>{done ? 'Done' : 'Face ID'}</div>
+          <div style={{ fontSize: 11.5, opacity: 0.6 }}>{done ? 'Payment authorised' : 'Confirming payment…'}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
 // Interactive payment sheet — Apple/Google biometric simulation, or a Fawry code.
 function PaymentSheet({ V, method, amount, merchant, card, onSuccess, onClose }) {
   const [phase, setPhase] = React.useState('ask');
+  const [faceDone, setFaceDone] = React.useState(false);
   const [ref] = React.useState(() => String(Math.floor(1000000000 + Math.random() * 8999999999)));
   const dark = method === 'apple' || method === 'google';
   const name = method === 'apple' ? 'Apple Pay' : method === 'google' ? 'Google Pay' : 'Fawry';
   const ink = dark ? '#fdf6ec' : V.ink;
   const sub = dark ? 'rgba(253,246,236,0.6)' : V.inkMute;
-  const go = () => { setPhase('processing'); setTimeout(() => { setPhase('done'); setTimeout(onSuccess, 850); }, 1500); };
+  const go = () => {
+    setPhase('processing');
+    if (method === 'apple') setTimeout(() => setFaceDone(true), 1150);
+    setTimeout(() => { setPhase('done'); setTimeout(onSuccess, 850); }, 1500);
+  };
   const [phone, setPhone] = React.useState('');
   const [sent, setSent] = React.useState(false);
   const phoneOk = phone.replace(/\D/g, '').length === 11;
@@ -6701,8 +6740,13 @@ function PaymentSheet({ V, method, amount, merchant, card, onSuccess, onClose })
           </div>
         ) : phase === 'processing' ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '14px 0 8px' }}>
-            {(method === 'apple' || method === 'google') ? <FaceID dark={dark} /> : <span style={{ width: 26, height: 26, border: `2.5px solid ${V.rule}`, borderTopColor: V.accent, borderRadius: '50%', display: 'inline-block', animation: 'm-spin 0.7s linear infinite' }} />}
-            <div style={{ fontSize: 13, color: sub }}>{method === 'fawry' ? 'Reserving your seat…' : (method === 'apple' ? 'Confirming with Face ID…' : 'Confirming…')}</div>
+            {method === 'apple' ? (
+              <React.Fragment>
+                <style>{`@keyframes m-bobup{0%,100%{transform:translateY(2px);opacity:.55}50%{transform:translateY(-3px);opacity:1}}`}</style>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={sub} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'm-bobup 1s ease-in-out infinite' }}><polyline points="18 15 12 9 6 15"/></svg>
+              </React.Fragment>
+            ) : method === 'google' ? <FaceID dark={dark} /> : <span style={{ width: 26, height: 26, border: `2.5px solid ${V.rule}`, borderTopColor: V.accent, borderRadius: '50%', display: 'inline-block', animation: 'm-spin 0.7s linear infinite' }} />}
+            <div style={{ fontSize: 13, color: sub }}>{method === 'fawry' ? 'Reserving your seat…' : (method === 'apple' ? 'Glance up to confirm with Face ID' : 'Confirming…')}</div>
           </div>
         ) : method === 'fawry' ? (
           !sent ? (
@@ -6736,6 +6780,8 @@ function PaymentSheet({ V, method, amount, merchant, card, onSuccess, onClose })
       </div>
     </div>
       ), target)}
+      {method === 'apple' && phase === 'processing' && target && ReactDOM.createPortal(
+        <FaceIDDrop done={faceDone} />, target)}
     </React.Fragment>
   );
 }
@@ -7186,7 +7232,7 @@ function GroupChatScreen({ V, dense, group, goBack }) {
       {/* Messages */}
       <div ref={scRef} style={{ flex: 1, overflowY: 'auto', padding: `${dense ? 12 : 16}px ${pad}px`, display: 'flex', flexDirection: 'column', gap: 8 }}>
         {msgs === null ? (
-          <div style={{ color: V.inkMute, fontSize: 13, textAlign: 'center', marginTop: 20 }}>Loading…</div>
+          <div aria-hidden style={{ flex: 1 }} />
         ) : msgs.length === 0 ? (
           <div style={{ textAlign: 'center', marginTop: 30, color: V.inkMute }}>
             <div style={{ fontSize: 30, marginBottom: 8 }}>💬</div>
@@ -10848,6 +10894,7 @@ function NotificationsScreen({ V, dense, role, goBack, openChat, openLiveChat })
 // instantly from the last fetched data while fresh data loads in the
 // background — instead of a blank/slow wait every navigation.
 let CONVO_CACHE = null;
+let GROUPS_CACHE = null;
 const THREAD_CACHE = {};
 function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenConversation, onOpenGroup }) {
   const pad = dense ? 14 : 18;
@@ -10886,7 +10933,7 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
   // ── Live conversations (Stage 5) ──
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
   const [convos, setConvos] = React.useState(CONVO_CACHE);
-  const [groups, setGroups] = React.useState([]);
+  const [groups, setGroups] = React.useState(GROUPS_CACHE || []);
   const [prefs, setPrefs] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem('mentora_chat_prefs') || '{}'); } catch (e) { return {}; }
   });
@@ -10902,7 +10949,19 @@ function ChatListScreen({ V, dense, role, goBack, openChat, onNewChat, onOpenCon
     if (!DB) return;
     const reload = () => DB.conversations().then(list => { CONVO_CACHE = list; setConvos(list); }).catch(() => setConvos([]));
     reload();
-    if (DB.myGroups) DB.myGroups().then(setGroups).catch(() => setGroups([]));
+    if (DB.myGroups) DB.myGroups().then(list => {
+      GROUPS_CACHE = list;
+      setGroups(list);
+      // Warm each group's message cache now so opening a class group renders
+      // instantly (no "Loading…" round-trip on first tap).
+      if (DB.groupMessages && Array.isArray(list)) {
+        list.forEach(g => {
+          if (g && g.id && GROUP_MSG_CACHE[g.id] === undefined) {
+            DB.groupMessages(g.id).then(rows => { GROUP_MSG_CACHE[g.id] = rows; }).catch(() => {});
+          }
+        });
+      }
+    }).catch(() => setGroups([]));
     // Live: refresh the list when any message involving me lands.
     const unsub = DB.subscribeRealtime ? DB.subscribeRealtime({ onMessage: reload }) : null;
     return () => { if (unsub) unsub(); };
@@ -11882,7 +11941,20 @@ function MentoraApp({ variant, os, density, scope,
                       fullScreen = false }) {
   const V = VARIANTS[variant];
   const dense = density === 'compact';
-  const [screen, setScreen] = useState(initialScreen);
+  // Synchronously detect a stored Supabase session so we can show a splash (not
+  // the Welcome page) while the async profile check runs — avoids the
+  // welcome-screen flash on app launch when already signed in.
+  const hasStoredSession = () => {
+    try {
+      if (!fullScreen || !(typeof window !== 'undefined' && window.MENTORA_DB)) return false;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && /^sb-.*-auth-token$/.test(k) && localStorage.getItem(k)) return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+  const [screen, setScreen] = useState(() => hasStoredSession() ? 'splash' : initialScreen);
   const [role, setRole] = useState(initialRole);
   const [activeMentorId, setActiveMentorId] = useState('layla');
   const [activeCourseId, setActiveCourseId] = useState(null);
@@ -12034,7 +12106,8 @@ function MentoraApp({ variant, os, density, scope,
     if (!DB || !fullScreen) return;
     DB.currentProfile().then(p => {
       if (p) { setProfile(withLocalExtras(p)); setRole(p.role || 'learner'); setScreen('home'); }
-    }).catch(() => {});
+      else { setScreen(s => s === 'splash' ? 'welcome' : s); }
+    }).catch(() => { setScreen(s => s === 'splash' ? 'welcome' : s); });
   }, []);
   // Save edited profile fields: update local state instantly, back up
   // bio/craft, and best-effort sync name/avatar/bio/craft to the backend.
@@ -12202,7 +12275,7 @@ function MentoraApp({ variant, os, density, scope,
     setScreen(id);
   };
 
-  const isPreAuth = screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
+  const isPreAuth = screen === 'splash' || screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
   const hideTabBar = isPreAuth || screen === 'booking' || screen === 'courseDetail' || screen === 'chat' || screen === 'group' || screen === 'createCourse' || screen === 'editProfile' || screen === 'payment' || screen === 'addCard' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family'; // these have their own bottom bars
   // Which tab reads as active (messages screen lights the Messages tab;
   // settings screen lights the Profile tab).
@@ -12232,6 +12305,20 @@ function MentoraApp({ variant, os, density, scope,
       <VariantCSS variantKey={variant} scope={scope} />
       <div ref={scrollRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
       <PaperBg V={V} style={{ flex: 1, minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
+        {screen === 'splash' && (
+          <div className="m-fade" style={{ flex: 1, minHeight: '100%', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 22, fontFamily: V.fontSans, color: V.ink }}>
+            <style>{`@keyframes m-splashpulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.06);opacity:0.88}}`}</style>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, animation: 'm-splashpulse 1.6s ease-in-out infinite' }}>
+              <div style={{ width: 54, height: 54, borderRadius: 16, background: V.accent, display: 'flex', alignItems: 'center',
+                justifyContent: 'center', fontFamily: V.fontSerif, fontStyle: 'italic', fontWeight: 600, fontSize: 32, color: '#fff8ef',
+                boxShadow: `0 10px 26px ${V.accent}55` }}>M</div>
+              <span className="m-serif" style={{ fontSize: 30, color: V.ink, fontWeight: V.polaroid ? 500 : 400 }}>Mentora</span>
+            </div>
+            <span style={{ width: 24, height: 24, border: `2.5px solid ${V.rule}`, borderTopColor: V.accent,
+              borderRadius: '50%', display: 'inline-block', animation: 'm-spin 0.7s linear infinite' }} />
+          </div>
+        )}
         {screen === 'welcome' && (
           <WelcomeScreen V={V} dense={dense} os={os}
                          onEnter={() => setScreen('landing')}
