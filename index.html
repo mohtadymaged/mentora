@@ -194,6 +194,9 @@ window.MENTORA_SUPABASE = {
         // `bio` / `craft` columns are optional in the schema — read defensively.
         bio: data.bio || "",
         craft: data.craft || "",
+        // Gamification XP (drives the Home level bar). Was previously dropped
+        // here, so the bar always showed 0 even when the row had XP.
+        xp: data.xp || 0,
       };
     },
 
@@ -294,13 +297,22 @@ window.MENTORA_SUPABASE = {
 
     // ── Reviews (Stage 4) ───────────────────────────────────
     // All reviews for a course, newest first, with reviewer name/avatar.
+    // There's no reviews→profiles FK to embed, so we look the reviewers'
+    // profiles up in a second query and merge (same pattern as conversations).
     async courseReviews(courseId) {
       const { data, error } = await sb.from("reviews")
-        .select("id, rating, body, created_at, learner_id, profiles(full_name, avatar_url)")
+        .select("id, rating, body, created_at, learner_id")
         .eq("course_id", courseId).order("created_at", { ascending: false });
       if (error) { console.warn("[Mentora] courseReviews:", error.message); return []; }
-      return (data || []).map(function (r) {
-        var p = r.profiles || {};
+      const rows = data || [];
+      const ids = [...new Set(rows.map(function (r) { return r.learner_id; }).filter(Boolean))];
+      var pmap = {};
+      if (ids.length) {
+        const { data: profs } = await sb.from("profiles").select("id, full_name, avatar_url").in("id", ids);
+        (profs || []).forEach(function (p) { pmap[p.id] = p; });
+      }
+      return rows.map(function (r) {
+        var p = pmap[r.learner_id] || {};
         var av = p.avatar_url || "";
         var isPhoto = av.startsWith("data:") || av.startsWith("http");
         return {
@@ -334,7 +346,8 @@ window.MENTORA_SUPABASE = {
     },
 
     // Add or update the learner's review (upsert on course+learner).
-    // Enroll-gated: must be enrolled in the class.
+    // Enroll-gated: must be enrolled in the class. (XP for a first review is
+    // granted by a server-side DB trigger, not here.)
     async submitReview(courseId, rating, body) {
       const { data: { session } } = await sb.auth.getSession();
       if (!session) throw new Error("Please sign in again.");
@@ -695,13 +708,22 @@ window.MENTORA_SUPABASE = {
       const { data: { session } } = await sb.auth.getSession();
       if (!session) return [];
       const me = session.user.id;
+      // reviews→courses embeds fine; reviews→profiles does not, so fetch the
+      // reviewer profiles separately and merge.
       const { data, error } = await sb.from("reviews")
-        .select("id, rating, body, created_at, profiles(full_name, avatar_url), courses!inner(title, mentor_id)")
+        .select("id, rating, body, created_at, learner_id, courses!inner(title, mentor_id)")
         .eq("courses.mentor_id", me)
         .order("created_at", { ascending: false });
       if (error) { console.warn("[Mentora] myReceivedReviews:", error.message); return []; }
-      return (data || []).map(function (r) {
-        var p = r.profiles || {}; var c = r.courses || {};
+      const rows = data || [];
+      const ids = [...new Set(rows.map(function (r) { return r.learner_id; }).filter(Boolean))];
+      var pmap = {};
+      if (ids.length) {
+        const { data: profs } = await sb.from("profiles").select("id, full_name, avatar_url").in("id", ids);
+        (profs || []).forEach(function (p) { pmap[p.id] = p; });
+      }
+      return rows.map(function (r) {
+        var p = pmap[r.learner_id] || {}; var c = r.courses || {};
         var first = (p.full_name || "Member").split(" ")[0];
         var av = p.avatar_url || "";
         var isPhoto = av.startsWith("data:") || av.startsWith("http");
@@ -736,7 +758,8 @@ window.MENTORA_SUPABASE = {
         seats: parseInt(c.seats, 10) || 20,
         lessons: parseInt(c.lessons, 10) || 0,
         venue: c.venue || null, area: c.area || null,
-        schedule: c.schedule || null, category: c.category || null,
+        schedule: c.schedule || null,
+        category: (["creative","lifestyle","tech","wellness","language","business","other"].indexOf(c.category) >= 0 ? c.category : "other"),
         media_url: c.media_url || null,
         rating: 0, enrolled: 0, published: true,
       };
@@ -797,14 +820,23 @@ window.MENTORA_SUPABASE = {
     async myEnrollments() {
       const { data: { session } } = await sb.auth.getSession();
       if (!session) return [];
-      let res = await sb.from("enrollments")
-        .select("level, created_at, for_member, courses(*), family_members(name)")
-        .eq("learner_id", session.user.id).order("created_at", { ascending: false });
-      if (res.error) { // optional for_member column/relationship may not exist
-        res = await sb.from("enrollments").select("level, created_at, courses(*)")
-          .eq("learner_id", session.user.id).order("created_at", { ascending: false });
+      const lid = session.user.id;
+      // Cascade from richest → simplest so a missing column or relationship
+      // (e.g. some deployments lack enrollments.created_at, for_member, or the
+      // family_members FK) degrades gracefully instead of returning nothing.
+      const attempts = [
+        () => sb.from("enrollments").select("level, created_at, for_member, courses(*), family_members(name)").eq("learner_id", lid).order("created_at", { ascending: false }),
+        () => sb.from("enrollments").select("level, for_member, courses(*), family_members(name)").eq("learner_id", lid).order("id", { ascending: false }),
+        () => sb.from("enrollments").select("level, courses(*)").eq("learner_id", lid).order("id", { ascending: false }),
+        () => sb.from("enrollments").select("courses(*)").eq("learner_id", lid),
+      ];
+      let res;
+      for (const run of attempts) {
+        res = await run();
+        if (!res.error) break;
       }
-      const data = res.data || [];
+      if (res && res.error) { console.warn("[Mentora] myEnrollments:", res.error.message); return []; }
+      const data = (res && res.data) || [];
       return data.filter(r => r.courses).map(r => ({ ...r.courses, level: r.level,
         forKid: (r.family_members && r.family_members.name) || null }));
     },
@@ -5359,7 +5391,18 @@ function CoursesScreen({ V, dense, role, openMentor, openCreateCourse, myLiveCou
 function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
   const pad = dense ? 14 : 18;
   const [cat, setCat] = useState('All');
-  const categories = ['All', 'Art', 'Cooking', 'Tech', 'Wellness', 'Speaking', 'Business'];
+  // Categories map app-facing labels to the DB `course_category` enum values so
+  // filtering live courses (which store enum values) actually matches.
+  const categories = [
+    { k: 'All', label: 'All' },
+    { k: 'creative', label: 'Art & Craft' },
+    { k: 'lifestyle', label: 'Cooking & Home' },
+    { k: 'tech', label: 'Tech' },
+    { k: 'wellness', label: 'Wellness' },
+    { k: 'language', label: 'Speaking' },
+    { k: 'business', label: 'Business' },
+    { k: 'other', label: 'Other' },
+  ];
 
   // All courses gathered from MENTORS, plus a few extra recommended
   const allCourses = MENTORS.flatMap(m => m.courses.map(c => ({
@@ -5611,17 +5654,17 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
         margin: `0 -${pad}px ${dense ? 18 : 22}px`,
         padding: `0 ${pad}px`,
       }}>
-        {categories.map(c => {
-          const on = cat === c;
+        {categories.map(ct => {
+          const on = cat === ct.k;
           return (
-            <button key={c} onClick={() => setCat(c)} className="m-tap" style={{
+            <button key={ct.k} onClick={() => setCat(ct.k)} className="m-tap" style={{
               background: on ? V.accent : V.surface,
               color: on ? '#fffaf0' : V.ink,
               border: `1px solid ${on ? V.accent : V.rule}`,
               padding: '7px 14px', borderRadius: 100,
               fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap',
               flexShrink: 0,
-            }}>{c}</button>
+            }}>{ct.label}</button>
           );
         })}
       </div>
@@ -6523,7 +6566,14 @@ function MethodIcon({ kind, selected, onClick, brandHint, V }) {
   const inner = kind === 'apple' ? <AppleMark size={20} color="#000" />
     : kind === 'google' ? <GMark size={20} />
     : kind === 'fawry' ? <FawryMark h={13} />
-    : <CardBrandLogo brand={brandHint || 'mastercard'} h={17} />;
+    : (
+      // Generic card glyph — independent of any one network's brand.
+      <svg width="26" height="20" viewBox="0 0 26 20" fill="none" style={{ display: 'block' }}>
+        <rect x="1" y="1.5" width="24" height="17" rx="3" fill={selected ? V.accent : '#6b5b49'} />
+        <rect x="1" y="5" width="24" height="3.4" fill={selected ? '#fff' : '#fdf6ec'} opacity="0.92" />
+        <rect x="4" y="12.5" width="8" height="2.6" rx="1.3" fill="#fff" opacity="0.85" />
+      </svg>
+    );
   return (
     <button type="button" onClick={onClick} className="m-tap" style={{
       width: 64, height: 54, borderRadius: 15, flexShrink: 0,
@@ -8962,6 +9012,427 @@ function RoleScreen({ V, dense, os, onPick, goBack }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// CREATE COURSE — teacher adds a class (writes to DB on deployed build)
+// ─────────────────────────────────────────────────────────
+function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
+  const pad = dense ? 22 : 28;
+  const EMOJIS = ['🎨','🍳','💻','🧘','🎤','💰','📷','🎸','🪡','🌿','📖','🎭'];
+  const CATS = [
+    { k: 'creative', label: 'Art & Craft' },
+    { k: 'lifestyle', label: 'Cooking & Home' },
+    { k: 'tech', label: 'Tech' },
+    { k: 'wellness', label: 'Wellness' },
+    { k: 'language', label: 'Speaking' },
+    { k: 'business', label: 'Business' },
+    { k: 'other', label: 'Other' },
+  ];
+  const AREAS = ['Downtown','Abu Tig Marina','Tawila','Zeytuna','Fanadir','South Marina','Other'];
+  const [c, setC] = useState({
+    title: '', emoji: '🎨', category: 'creative', price: '', seats: 12, lessons: 8,
+    venue: '', area: 'Downtown', schedule: '',
+  });
+  const [focus, setFocus] = useState(null);
+  const [err, setErr] = useState('');
+  const set = (k, v) => setC(p => ({ ...p, [k]: v }));
+
+  // Media (photo/video) the teacher uploads to market the class.
+  const [media, setMedia] = useState(null);        // dataURL
+  const [mediaKind, setMediaKind] = useState(null); // 'image' | 'video'
+  const mediaRef = React.useRef(null);
+  const onPickMedia = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const kind = file.type.startsWith('video') ? 'video' : 'image';
+    const reader = new FileReader();
+    reader.onload = () => { setMedia(reader.result); setMediaKind(kind); };
+    reader.readAsDataURL(file);
+  };
+
+  // Structured schedule: day chips + start/end time → composed string.
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const TIMES = ['7am','8am','9am','10am','11am','12pm','1pm','2pm','3pm','4pm','5pm','6pm','7pm','8pm','9pm'];
+  const [days, setDays] = useState([]);
+  const [startT, setStartT] = useState('6pm');
+  const [endT, setEndT] = useState('8pm');
+  const toggleDay = (d) => setDays(p => p.includes(d) ? p.filter(x => x !== d) : [...p, d]);
+  const composedSchedule = days.length
+    ? `${days.join(' & ')} · ${startT}–${endT}`
+    : '';
+
+  const submit = () => {
+    setErr('');
+    if (!c.title.trim()) { setErr('Give your class a name.'); return; }
+    if (c.price === '' || c.price === null) { setErr('Set a price (0 is fine for free).'); return; }
+    if (!days.length) { setErr('Pick at least one class day.'); return; }
+    onCreate({ ...c, schedule: composedSchedule, media_url: media || null }, setErr);
+  };
+
+  // Number stepper (−  value  +) — friendlier than a cramped number box.
+  const Stepper = ({ label, value, min, onChange }) => (
+    <div style={{ flex: 1 }}>
+      <div style={labelStyle}>{label}</div>
+      <div style={{
+        background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 12,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '5px 6px',
+      }}>
+        <button type="button" onClick={() => onChange(Math.max(min, (value || 0) - 1))} className="m-tap" style={{
+          width: 32, height: 32, borderRadius: 9, border: 'none', cursor: 'pointer',
+          background: V.accentBg, color: V.accent, fontSize: 20, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+        }}>−</button>
+        <span className="m-serif" style={{ fontSize: 18, color: V.ink, fontWeight: 600,
+          fontFamily: 'Fredoka, sans-serif', minWidth: 28, textAlign: 'center' }}>{value}</span>
+        <button type="button" onClick={() => onChange((value || 0) + 1)} className="m-tap" style={{
+          width: 32, height: 32, borderRadius: 9, border: 'none', cursor: 'pointer',
+          background: V.accentBg, color: V.accent, fontSize: 20, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+        }}>+</button>
+      </div>
+    </div>
+  );
+
+  const fieldWrap = (name) => ({
+    background: V.surface, border: `1px solid ${focus === name ? V.accent : V.rule}`,
+    borderRadius: 12, padding: '11px 14px',
+    boxShadow: focus === name ? `0 0 0 3px ${V.accent}22` : 'none',
+    transition: 'box-shadow .15s ease, border-color .15s ease',
+    display: 'flex', alignItems: 'center', gap: 8,
+  });
+  const labelStyle = { fontSize: 10.5, letterSpacing: '0.14em', textTransform: 'uppercase',
+    color: V.inkMute, fontWeight: 600, marginBottom: 6 };
+  const inputStyle = { flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+    outline: 'none', fontSize: 15, color: V.ink, fontFamily: V.fontSans, padding: 0 };
+
+  const Field = (name, label, opts = {}) => (
+    <label style={{ display: 'block', flex: opts.flex || 'auto' }}>
+      <div style={labelStyle}>{label}</div>
+      <div style={fieldWrap(name)}>
+        {opts.prefix && <span style={{ color: V.inkMute, fontSize: 15 }}>{opts.prefix}</span>}
+        <input type={opts.type || 'text'} value={c[name]} inputMode={opts.inputMode}
+          placeholder={opts.ph || ''}
+          onChange={e => set(name, e.target.value)}
+          onFocus={() => setFocus(name)} onBlur={() => setFocus(null)}
+          style={inputStyle} />
+      </div>
+    </label>
+  );
+
+  return (
+    <div data-screen-label="Create Course" className="m-fade" style={{
+      minHeight: '100%', display: 'flex', flexDirection: 'column',
+      fontFamily: V.fontSans, color: V.ink, paddingBottom: 16,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: `4px ${pad}px ${dense ? 6 : 10}px` }}>
+        <button onClick={goBack} className="m-tap" style={{
+          width: 36, height: 36, borderRadius: '50%', background: V.surface,
+          border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: V.ink,
+        }}>{Icon.back(18)}</button>
+      </div>
+
+      <BlurFade delay={0.05} duration={0.5} yOffset={8}>
+        <div style={{ padding: `${dense ? 8 : 14}px ${pad}px ${dense ? 14 : 20}px` }}>
+          <div className="m-hand" style={{ color: V.ribbon, fontSize: 17, marginBottom: 4 }}>
+            share your craft —
+          </div>
+          <h1 className="m-serif" style={{
+            fontSize: dense ? 26 : 30, color: V.ink, lineHeight: 1.05,
+            letterSpacing: '-0.02em', margin: 0, fontWeight: V.polaroid ? 500 : 400,
+          }}>
+            Add a <em style={{ fontStyle: 'italic', color: V.accent }}>class</em>
+          </h1>
+        </div>
+      </BlurFade>
+
+      <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
+        {/* Emoji picker */}
+        <div>
+          <div style={labelStyle}>Pick an icon</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {EMOJIS.map(e => {
+              const on = c.emoji === e;
+              return (
+                <button key={e} type="button" onClick={() => set('emoji', e)} className="m-tap" style={{
+                  width: 42, height: 42, borderRadius: 12, fontSize: 22,
+                  background: on ? V.accent : V.surface,
+                  border: `1px solid ${on ? V.accent : V.rule}`,
+                  boxShadow: on ? `0 6px 14px ${V.accent}40` : 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'background .15s ease, transform .15s ease',
+                  transform: on ? 'scale(1.05)' : 'scale(1)',
+                }}>{e}</button>
+              );
+            })}
+          </div>
+        </div>
+
+        {Field('title', 'Class name', { ph: 'e.g. Modern Watercolor' })}
+
+        {/* Category chips */}
+        <div>
+          <div style={labelStyle}>Category</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+            {CATS.map(cat => {
+              const on = c.category === cat.k;
+              return (
+                <button key={cat.k} type="button" onClick={() => set('category', cat.k)} className="m-tap" style={{
+                  background: on ? V.accent : V.surface, color: on ? '#fff' : V.ink,
+                  border: `1px solid ${on ? V.accent : V.rule}`,
+                  padding: '7px 13px', borderRadius: 100, fontSize: 12.5, fontWeight: 600,
+                }}>{cat.label}</button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Price (full width) + Seats / Sessions steppers */}
+        {Field('price', 'Price (EGP, 0 = free)', { prefix: '£E', type: 'number', inputMode: 'numeric', ph: '0' })}
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Stepper label="Seats" value={c.seats} min={1} onChange={v => set('seats', v)} />
+          <Stepper label="Sessions" value={c.lessons} min={1} onChange={v => set('lessons', v)} />
+        </div>
+
+        {/* Marketing media — photo/video of the work */}
+        <div>
+          <div style={labelStyle}>Show your work <span style={{ textTransform: 'none', letterSpacing: 0, color: V.inkMute, fontWeight: 500 }}>· optional</span></div>
+          {media ? (
+            <div style={{ position: 'relative', borderRadius: 14, overflow: 'hidden',
+              border: `1px solid ${V.rule}` }}>
+              {mediaKind === 'video' ? (
+                <video src={media} style={{ width: '100%', maxHeight: 200, objectFit: 'cover', display: 'block', background: '#000' }} muted autoPlay loop playsInline />
+              ) : (
+                <img src={media} alt="" style={{ width: '100%', maxHeight: 200, objectFit: 'cover', display: 'block' }} />
+              )}
+              <button type="button" onClick={() => { setMedia(null); setMediaKind(null); }} style={{
+                position: 'absolute', top: 8, right: 8, width: 30, height: 30, borderRadius: '50%',
+                background: 'rgba(0,0,0,0.55)', color: '#fff', border: 'none', cursor: 'pointer',
+                fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>×</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => mediaRef.current && mediaRef.current.click()} className="m-tap" style={{
+              width: '100%', padding: '22px 0', borderRadius: 14,
+              background: V.surface, border: `1.5px dashed ${V.accent}66`,
+              color: V.accent, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+            }}>
+              <span style={{ fontSize: 26 }}>📸</span>
+              Add a photo or video of your work
+              <span style={{ fontSize: 11, color: V.inkMute, fontWeight: 500 }}>helps neighbors decide</span>
+            </button>
+          )}
+          <input ref={mediaRef} type="file" accept="image/*,video/*" onChange={onPickMedia} style={{ display: 'none' }} />
+        </div>
+
+        {Field('venue', 'Venue', { ph: 'e.g. Marina Art Loft, or my home studio' })}
+
+        {/* Area (Gouna district) */}
+        <div>
+          <div style={labelStyle}>Area in El Gouna</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+            {AREAS.map(a => {
+              const on = c.area === a;
+              return (
+                <button key={a} type="button" onClick={() => set('area', a)} className="m-tap" style={{
+                  background: on ? V.accentBg : V.surface, color: on ? V.accent : V.ink,
+                  border: `1px solid ${on ? V.accent : V.rule}`, fontWeight: 600,
+                  padding: '7px 12px', borderRadius: 100, fontSize: 12,
+                }}>{a}</button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Schedule — choose days + time range (no typing) */}
+        <div>
+          <div style={labelStyle}>Class days</div>
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {DAYS.map(d => {
+              const on = days.includes(d);
+              return (
+                <button key={d} type="button" onClick={() => toggleDay(d)} className="m-tap" style={{
+                  flex: 1, minWidth: 38, padding: '9px 0', borderRadius: 10,
+                  background: on ? V.accent : V.surface, color: on ? '#fff' : V.ink,
+                  border: `1px solid ${on ? V.accent : V.rule}`,
+                  fontSize: 12, fontWeight: 600,
+                }}>{d}</button>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, marginTop: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={labelStyle}>Starts</div>
+              <select value={startT} onChange={e => setStartT(e.target.value)} style={{
+                width: '100%', background: V.surface, border: `1px solid ${V.rule}`,
+                borderRadius: 12, padding: '12px 12px', fontSize: 15, color: V.ink,
+                fontFamily: V.fontSans, appearance: 'none', cursor: 'pointer',
+              }}>{TIMES.map(t => <option key={t} value={t}>{t}</option>)}</select>
+            </div>
+            <span style={{ color: V.inkMute, paddingBottom: 12 }}>→</span>
+            <div style={{ flex: 1 }}>
+              <div style={labelStyle}>Ends</div>
+              <select value={endT} onChange={e => setEndT(e.target.value)} style={{
+                width: '100%', background: V.surface, border: `1px solid ${V.rule}`,
+                borderRadius: 12, padding: '12px 12px', fontSize: 15, color: V.ink,
+                fontFamily: V.fontSans, appearance: 'none', cursor: 'pointer',
+              }}>{TIMES.map(t => <option key={t} value={t}>{t}</option>)}</select>
+            </div>
+          </div>
+          {composedSchedule && (
+            <div style={{ marginTop: 8, fontSize: 12, color: V.ribbon, fontWeight: 600 }}>
+              {composedSchedule}
+            </div>
+          )}
+        </div>
+
+        {err && (
+          <div style={{ fontSize: 12.5, color: '#fff', background: V.accent,
+            padding: '9px 12px', borderRadius: 10, fontWeight: 500 }}>{err}</div>
+        )}
+      </div>
+
+      <div style={{ padding: `${dense ? 16 : 22}px ${pad}px 0` }}>
+        <button onClick={submit} disabled={busy} className="m-tap" style={{
+          width: '100%', background: V.accent, color: '#fff', border: 'none',
+          borderRadius: 16, padding: '16px 0', fontSize: 15, fontWeight: 700,
+          letterSpacing: '0.01em', boxShadow: `0 10px 22px ${V.accent}45`,
+          opacity: busy ? 0.6 : 1,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        }}>
+          {busy ? 'Publishing…' : <>Publish class {Icon.arrow(17, '#fff')}</>}
+        </button>
+        <div className="m-hand" style={{ textAlign: 'center', color: V.inkMute, fontSize: 14, marginTop: 10 }}>
+          — your neighbors will see it right away —
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
+// LOGIN — returning users (email + password)
+// ─────────────────────────────────────────────────────────
+function LoginScreen({ V, dense, os, onLogin, goBack, busy }) {
+  const pad = dense ? 22 : 28;
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [focus, setFocus] = useState(null);
+  const [err, setErr] = useState('');
+
+  const submit = () => {
+    setErr('');
+    if (!email || !password) { setErr('Enter your email and password.'); return; }
+    onLogin(email.trim(), password, setErr);
+  };
+
+  const fieldWrap = (name) => ({
+    background: V.surface, border: `1px solid ${focus === name ? V.accent : V.rule}`,
+    borderRadius: 12, padding: '12px 14px',
+    boxShadow: focus === name ? `0 0 0 3px ${V.accent}22` : 'none',
+    transition: 'box-shadow .15s ease, border-color .15s ease',
+    display: 'flex', alignItems: 'center', gap: 8,
+  });
+
+  return (
+    <div data-screen-label="Login" className="m-fade" style={{
+      minHeight: '100%', display: 'flex', flexDirection: 'column',
+      fontFamily: V.fontSans, color: V.ink, paddingBottom: 16,
+    }}>
+      {/* Top bar */}
+      <div style={{ display: 'flex', alignItems: 'center', padding: `4px ${pad}px ${dense ? 6 : 10}px` }}>
+        <button onClick={goBack} className="m-tap" style={{
+          width: 36, height: 36, borderRadius: '50%', background: V.surface,
+          border: `1px solid ${V.rule}`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: V.ink,
+        }}>{Icon.back(18)}</button>
+      </div>
+
+      {/* Header */}
+      <BlurFade delay={0.05} duration={0.55} yOffset={8}>
+        <div style={{ padding: `${dense ? 16 : 26}px ${pad}px ${dense ? 18 : 26}px` }}>
+          <div className="m-hand" style={{ color: V.ribbon, fontSize: 17, marginBottom: 4 }}>
+            welcome back
+          </div>
+          <h1 className="m-serif" style={{
+            fontSize: dense ? 30 : 36, color: V.ink, lineHeight: 1.05,
+            letterSpacing: '-0.02em', margin: 0, fontWeight: V.polaroid ? 500 : 400,
+          }}>
+            Good to see you<br/><em style={{ fontStyle: 'italic', color: V.accent }}>again</em>.
+          </h1>
+        </div>
+      </BlurFade>
+
+      {/* Form */}
+      <BlurFade delay={0.2} duration={0.55} yOffset={8}>
+        <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <label style={{ display: 'block' }}>
+            <div style={{ fontSize: 10.5, letterSpacing: '0.14em', textTransform: 'uppercase',
+              color: V.inkMute, fontWeight: 600, marginBottom: 6 }}>Email</div>
+            <div style={fieldWrap('email')}>
+              <input type="email" value={email} autoComplete="email"
+                onChange={e => setEmail(e.target.value)}
+                onFocus={() => setFocus('email')} onBlur={() => setFocus(null)}
+                placeholder="you@example.com"
+                style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+                  outline: 'none', fontSize: 15, color: V.ink, fontFamily: V.fontSans, padding: 0 }} />
+            </div>
+          </label>
+
+          <label style={{ display: 'block' }}>
+            <div style={{ fontSize: 10.5, letterSpacing: '0.14em', textTransform: 'uppercase',
+              color: V.inkMute, fontWeight: 600, marginBottom: 6 }}>Password</div>
+            <div style={fieldWrap('password')}>
+              <input type={showPw ? 'text' : 'password'} value={password} autoComplete="current-password"
+                onChange={e => setPassword(e.target.value)}
+                onFocus={() => setFocus('password')} onBlur={() => setFocus(null)}
+                placeholder="Your password"
+                onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+                style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+                  outline: 'none', fontSize: 15, color: V.ink, fontFamily: V.fontSans, padding: 0 }} />
+              <button type="button" onClick={() => setShowPw(s => !s)} className="m-tap" style={{
+                background: 'transparent', border: 'none', padding: 4, cursor: 'pointer',
+                color: V.inkMute, display: 'flex',
+              }}>{showPw ? Icon.eyeOff(18, V.inkMute) : Icon.eye(18, V.inkMute)}</button>
+            </div>
+          </label>
+
+          {err && (
+            <div style={{ fontSize: 12.5, color: '#fff', background: V.accent,
+              padding: '9px 12px', borderRadius: 10, fontWeight: 500 }}>
+              {err}
+            </div>
+          )}
+        </div>
+      </BlurFade>
+
+      {/* Submit */}
+      <BlurFade delay={0.34} duration={0.55} yOffset={8}>
+        <div style={{ padding: `${dense ? 18 : 26}px ${pad}px 0`, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <button onClick={submit} disabled={busy} className="m-tap" style={{
+            width: '100%', background: V.accent, color: '#fff', border: 'none',
+            borderRadius: 16, padding: '16px 0', fontSize: 15, fontWeight: 700,
+            letterSpacing: '0.01em', boxShadow: `0 10px 22px ${V.accent}45`,
+            opacity: busy ? 0.6 : 1,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}>
+            {busy ? 'Signing in…' : <>Sign in {Icon.arrow(17, '#fff')}</>}
+          </button>
+          <div style={{ textAlign: 'center', fontSize: 13, color: V.inkSoft }}>
+            New here?{' '}
+            <button onClick={goBack} style={{ background: 'transparent', border: 'none',
+              color: V.accent, fontWeight: 700, fontSize: 13, padding: 0, cursor: 'pointer' }}>
+              Create an account
+            </button>
+          </div>
+        </div>
+      </BlurFade>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
 // REGISTRATION
 // ─────────────────────────────────────────────────────────
 function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
@@ -9927,18 +10398,46 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll
                     <BankCard brand={selCard.brand} last4={selCard.last4} holder={selCard.holder}
                       exp={String(selCard.exp_month).padStart(2,'0') + '/' + String(selCard.exp_year).slice(-2)} small />
                   )}
-                  {saved.length > 1 && selCardId !== 'new' && (
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {saved.map(cd => (
+                  {/* Choose a saved card or use another */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {saved.map(cd => {
+                      const on = selCardId === cd.id;
+                      return (
                         <button key={cd.id} type="button" onClick={() => setSelCardId(cd.id)} className="m-tap" style={{
-                          display: 'flex', alignItems: 'center', gap: 7, padding: '7px 11px', borderRadius: 100, cursor: 'pointer',
-                          background: selCardId === cd.id ? V.accentBg : V.surface, border: `1px solid ${selCardId === cd.id ? V.accent : V.rule}` }}>
-                          <CardBrandLogo brand={cd.brand} h={13} /><span style={{ fontSize: 12, color: V.ink }}>•• {cd.last4}</span>
+                          display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', cursor: 'pointer',
+                          background: on ? V.accentBg : V.surface, border: `1.5px solid ${on ? V.accent : V.rule}`,
+                          borderRadius: 13, padding: '11px 13px', transition: 'all .15s' }}>
+                          <div style={{ width: 34, display: 'flex', justifyContent: 'center', flexShrink: 0 }}><CardBrandLogo brand={cd.brand} h={16} /></div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13.5, color: V.ink, fontWeight: 600 }}>•••• {cd.last4}</div>
+                            <div style={{ fontSize: 11, color: V.inkMute, marginTop: 1 }}>
+                              Expires {String(cd.exp_month).padStart(2,'0')}/{String(cd.exp_year).slice(-2)}{cd.is_default ? ' · Default' : ''}
+                            </div>
+                          </div>
+                          <div style={{ width: 19, height: 19, borderRadius: '50%', flexShrink: 0, border: `2px solid ${on ? V.accent : V.rule}`,
+                            background: on ? V.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {on && <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#fff' }} />}
+                          </div>
                         </button>
-                      ))}
-                    </div>
-                  )}
-                  {selCardId === 'new' ? (
+                      );
+                    })}
+                    {/* Use another / add new card */}
+                    <button type="button" onClick={() => setSelCardId('new')} className="m-tap" style={{
+                      display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', cursor: 'pointer',
+                      background: selCardId === 'new' ? V.accentBg : V.surface, border: `1.5px solid ${selCardId === 'new' ? V.accent : V.rule}`,
+                      borderRadius: 13, padding: '11px 13px', transition: 'all .15s' }}>
+                      <div style={{ width: 34, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={selCardId === 'new' ? V.accent : V.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/><path d="M7 15h3" /></svg>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: V.ink, fontWeight: 600 }}>{saved.length ? 'Use another card' : 'Add a card'}</div>
+                      <div style={{ width: 19, height: 19, borderRadius: '50%', flexShrink: 0, border: `2px solid ${selCardId === 'new' ? V.accent : V.rule}`,
+                        background: selCardId === 'new' ? V.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {selCardId === 'new' && <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#fff' }} />}
+                      </div>
+                    </button>
+                  </div>
+                  {/* New-card form */}
+                  {selCardId === 'new' && (
                     <div className="m-fade" style={{ background: V.bg, border: `1px solid ${V.rule}`, borderRadius: 14, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
                       <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Name on card"
                         style={{ width: '100%', boxSizing: 'border-box', background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 11, padding: '12px 14px', fontSize: 14, color: V.ink, outline: 'none', fontFamily: V.fontSans }} />
@@ -9953,16 +10452,11 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll
                         <input value={newCvc} onChange={e => setNewCvc(e.target.value.replace(/\D/g,'').slice(0,4))} inputMode="numeric" placeholder="CVC"
                           style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 11, padding: '12px 14px', fontSize: 14, color: V.ink, outline: 'none', fontFamily: V.fontSans }} />
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 10.5, color: V.inkMute, display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={V.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-                          Brand, last 4 &amp; expiry only.
-                        </span>
-                        {saved.length > 0 && <button type="button" onClick={() => setSelCardId((saved.find(x => x.is_default) || saved[0]).id)} className="m-tap" style={{ background: 'transparent', border: 'none', color: V.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Use saved</button>}
+                      <div style={{ fontSize: 10.5, color: V.inkMute, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={V.inkMute} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                        Brand, last 4 &amp; expiry only.
                       </div>
                     </div>
-                  ) : (
-                    <button type="button" onClick={() => setSelCardId('new')} className="m-tap" style={{ width: '100%', background: 'transparent', border: `1.5px dashed ${V.accent}77`, borderRadius: 13, padding: '12px', color: V.accent, fontWeight: 700, fontSize: 13.5, cursor: 'pointer' }}>+ Add new card</button>
                   )}
                 </div>
               );
@@ -11339,6 +11833,8 @@ function MentoraApp({ variant, os, density, scope,
     return window.MENTORA_DB.submitReview(c.id, rating, body).then(() => {
       window.MENTORA_DB.courseReviews(c.id).then(setCourseReviews).catch(() => {});
       window.MENTORA_DB.myReview(c.id).then(setMyReview).catch(() => {});
+      // Refresh profile so the XP bar reflects a first-review XP award live.
+      window.MENTORA_DB.currentProfile().then(p => { if (p) setProfile(withLocalExtras(p)); }).catch(() => {});
     });
   };
   const openBooking = (courseId) => {
@@ -11508,6 +12004,9 @@ function MentoraApp({ variant, os, density, scope,
       } catch (e) {}
       DB.myEnrollments().then(setLiveEnrollments).catch(() => {});
       DB.courses().then(setLiveCourses).catch(() => {});
+      // Refresh the profile so the Home XP/level bar reflects the XP the DB
+      // trigger just awarded for this enrolment, without needing a reload.
+      DB.currentProfile().then(p => { if (p) setProfile(withLocalExtras(p)); }).catch(() => {});
       return res;
     });
   };
