@@ -3753,7 +3753,7 @@ function AvatarWheel({ avatars, value, onChange, V, big }) {
     </div>
   );
 }
-function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, notifUnread, openMessages, openProfile, openCourses, openExplore, profile, liveCourses, enrollments }) {
+function HomeScreen({ V, dense, openMentor, openCourse, openReviews, openNotifications, notifUnread, openMessages, openProfile, openCourses, openExplore, profile, liveCourses, enrollments }) {
   const pad = dense ? 14 : 18;
   // Real daily streak: counts consecutive days the app is opened (localStorage).
   const streak = React.useMemo(() => {
@@ -3988,9 +3988,9 @@ function HomeScreen({ V, dense, openMentor, openReviews, openNotifications, noti
         (enrollments && enrollments.length > 0) ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12, marginBottom: dense ? 22 : 28 }}>
             {enrollments.map(c => (
-              <div key={c.id} style={{
+              <div key={c.id} onClick={() => openCourse ? openCourse(c) : (c.mentor_id && openMentor && openMentor(c.mentor_id))} className="m-tap" style={{
                 background: V.surface, border: `1px solid ${V.rule}`,
-                borderRadius: 18, padding: dense ? 12 : 14,
+                borderRadius: 18, padding: dense ? 12 : 14, cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: 12,
                 backgroundImage: V.paper ? PAPER_NOISE : undefined,
                 backgroundSize: V.paper ? '240px 240px' : undefined,
@@ -4892,7 +4892,7 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, notifU
 // ─────────────────────────────────────────────────────────
 // COURSES TAB — role-aware (enrolled vs teaching)
 // ─────────────────────────────────────────────────────────
-function CoursesScreen({ V, dense, role, openMentor, openCreateCourse, myLiveCourses, myEnrollments, onUpdateCourse, onDeleteCourse, onEditCourse }) {
+function CoursesScreen({ V, dense, role, openMentor, openCourse, openCreateCourse, myLiveCourses, myEnrollments, onUpdateCourse, onDeleteCourse, onEditCourse }) {
   const pad = dense ? 14 : 18;
   const isTeacher = role === 'teacher';
   const [filter, setFilter] = useState('all');
@@ -5138,9 +5138,9 @@ function CoursesScreen({ V, dense, role, openMentor, openCreateCourse, myLiveCou
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: dense ? 10 : 12 }}>
             {myEnrollments.map(c => (
-              <div key={c.id} style={{
+              <div key={c.id} onClick={() => openCourse ? openCourse(c) : (c.mentor_id && openMentor && openMentor(c.mentor_id))} className="m-tap" style={{
                 background: V.surface, border: `1px solid ${V.rule}`,
-                borderRadius: 18, padding: dense ? 12 : 14,
+                borderRadius: 18, padding: dense ? 12 : 14, cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: 12,
                 backgroundImage: V.paper ? PAPER_NOISE : undefined,
                 backgroundSize: V.paper ? '240px 240px' : undefined,
@@ -7141,16 +7141,20 @@ const TERMS_SECTIONS = [
   { h: 'Changes', p: ["We may update these terms as Mentora grows; we'll flag meaningful changes in the app."] },
 ];
 
+// Per-group message cache so re-opening a class group paints its last-known
+// messages instantly while fresh data loads in the background (no load flash).
+let GROUP_MSG_CACHE = {};
 function GroupChatScreen({ V, dense, group, goBack }) {
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
   const pad = dense ? 14 : 18;
-  const [msgs, setMsgs] = React.useState(null);
+  const [msgs, setMsgs] = React.useState((group && GROUP_MSG_CACHE[group.id]) || null);
   const [draft, setDraft] = React.useState('');
   const scRef = React.useRef(null);
   React.useEffect(() => {
     if (!DB || !group) { setMsgs([]); return; }
     let alive = true;
-    const load = () => DB.groupMessages(group.id).then(rows => { if (alive) setMsgs(rows); }).catch(() => { if (alive) setMsgs([]); });
+    setMsgs(GROUP_MSG_CACHE[group.id] || null);   // instant paint from cache on switch
+    const load = () => DB.groupMessages(group.id).then(rows => { if (alive) { GROUP_MSG_CACHE[group.id] = rows; setMsgs(rows); } }).catch(() => { if (alive && !GROUP_MSG_CACHE[group.id]) setMsgs([]); });
     load();
     const unsub = DB.subscribeGroup ? DB.subscribeGroup(group.id, load) : null;
     const iv = setInterval(load, 5000);
@@ -7162,7 +7166,7 @@ function GroupChatScreen({ V, dense, group, goBack }) {
     setDraft('');
     setMsgs(m => [...(m || []), { id: 'tmp' + Date.now(), from: 'me', text: t, when: new Date().toISOString() }]);
     DB.sendGroupMessage(group.id, t)
-      .then(() => DB.groupMessages(group.id).then(setMsgs))
+      .then(() => DB.groupMessages(group.id).then(rows => { GROUP_MSG_CACHE[group.id] = rows; setMsgs(rows); }))
       .catch(() => {});
   };
   const fmtWhen = (iso) => { try { const d = new Date(iso); return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; } };
@@ -9921,7 +9925,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
 // ENROLL SCREEN — course enrollment checkout + confirmation
 // (Reuses the 'booking' screen slot.)
 // ─────────────────────────────────────────────────────────
-function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll, initialBookingState }) {
+function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll, initialBookingState, profile }) {
   const m = mentor || MENTORS[0];
   // Default to first course if not specified
   const c = course || (m.courses && m.courses[0]) || { title: 'Course', price: 0, lessons: 0, seats: 0, students: 0, emoji: '📘' };
@@ -10538,14 +10542,25 @@ function BookingScreen({ V, dense, mentor, course, goBack, onConfirmed, onEnroll
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 10.5, letterSpacing: '0.12em', textTransform: 'uppercase', color: V.inkMute, fontWeight: 700, marginBottom: 7 }}>Who's this for?</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
-              {[{ id: null, name: 'Me', avatar: '🙂' }].concat(members).map(mem => {
+              {[{ id: null, name: 'Me', isMe: true }].concat(members).map(mem => {
                 const on = forMember === mem.id;
+                // "Me" shows the signed-in member's real photo or chosen avatar;
+                // children show their own avatar emoji.
+                const mePhoto = mem.isMe && profile && profile.photoMode === 'photo' && profile.photoSrc;
+                const meAvatar = mem.isMe ? (profile && profile.avatar) : null;
                 return (
                   <button key={mem.id || 'me'} type="button" onClick={() => setForMember(mem.id)} className="m-tap" style={{
-                    display: 'flex', alignItems: 'center', gap: 6, padding: '7px 13px', borderRadius: 100, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 6, padding: '6px 13px 6px 7px', borderRadius: 100, cursor: 'pointer',
                     background: on ? V.accent : V.surface, color: on ? '#fffaf0' : V.ink,
                     border: `1px solid ${on ? V.accent : V.rule}`, fontSize: 12.5, fontWeight: 600,
-                  }}><span style={{ fontSize: 14 }}>{mem.avatar || '🧒'}</span>{mem.name}</button>
+                  }}>
+                    {mePhoto ? (
+                      <img src={profile.photoSrc} alt="" style={{ width: 22, height: 22, borderRadius: '50%', objectFit: 'cover', display: 'block' }} />
+                    ) : (
+                      <span style={{ fontSize: 16, width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(mem.isMe ? meAvatar : mem.avatar) || (mem.isMe ? '🙂' : '🧒')}</span>
+                    )}
+                    {mem.name}
+                  </button>
                 );
               })}
             </div>
@@ -11799,6 +11814,10 @@ function MentoraApp({ variant, os, density, scope,
   const [role, setRole] = useState(initialRole);
   const [activeMentorId, setActiveMentorId] = useState('layla');
   const [activeCourseId, setActiveCourseId] = useState(null);
+  // A course object opened directly (e.g. tapping an enrolled course) so the
+  // booking/detail screen can render its details even before the mentor's full
+  // course list has loaded.
+  const [directCourse, setDirectCourse] = useState(null);
   const [liveMentors, setLiveMentors] = useState(null);
   const [liveMentorCourses, setLiveMentorCourses] = useState(null);
   // Reviews (Stage 4) for the active course
@@ -11810,9 +11829,11 @@ function MentoraApp({ variant, os, density, scope,
   const mentor = liveMentorMatch
     ? { ...liveMentorMatch, courses: liveMentorCourses || [] }
     : (MENTORS.find(m => m.id === activeMentorId) || MENTORS[0]);
-  const activeCourse = mentor.courses && (
-    mentor.courses.find(c => c.id === activeCourseId) || mentor.courses[0]
-  );
+  const activeCourse = (directCourse && directCourse.id === activeCourseId)
+    ? directCourse
+    : (mentor.courses && (
+        mentor.courses.find(c => c.id === activeCourseId) || mentor.courses[0]
+      ));
   const openReviews = (courseArg) => {
     setScreen('reviews');
     const c = courseArg || activeCourse;
@@ -11852,6 +11873,22 @@ function MentoraApp({ variant, os, density, scope,
     } else {
       setLiveMentorCourses(null);
     }
+  };
+  // Open a course's own detail screen (used by enrolled-course cards). Shows the
+  // course details directly rather than the mentor's profile.
+  const openCourseDetail = (courseObj) => {
+    if (!courseObj) return;
+    setDirectCourse(courseObj);
+    setActiveCourseId(courseObj.id);
+    if (courseObj.mentor_id) {
+      setActiveMentorId(courseObj.mentor_id);
+      const isLive = (liveMentors || []).some(m => m.id === courseObj.mentor_id);
+      if (isLive && window.MENTORA_DB) {
+        setLiveMentorCourses(null);
+        window.MENTORA_DB.mentorCourses(courseObj.mentor_id).then(setLiveMentorCourses).catch(() => setLiveMentorCourses([]));
+      }
+    }
+    setScreen('booking');
   };
   const [activeThreadId, setActiveThreadId] = useState('t1');
   const [activeGroup, setActiveGroup] = useState(null);
@@ -12167,6 +12204,7 @@ function MentoraApp({ variant, os, density, scope,
           <HomeScreen V={V} dense={dense}
                       profile={profile}
                       openMentor={openMentor}
+                      openCourse={openCourseDetail}
                       openProfile={() => setScreen('settings')}
                       openCourses={() => setScreen('courses')}
                       openExplore={() => setScreen('explore')}
@@ -12198,6 +12236,7 @@ function MentoraApp({ variant, os, density, scope,
         {screen === 'courses' && (
           <CoursesScreen V={V} dense={dense} role={role}
                          openMentor={openMentor}
+                         openCourse={openCourseDetail}
                          onUpdateCourse={handleUpdateCourse}
                          onDeleteCourse={handleDeleteCourse}
                          onEditCourse={handleEditCourse}
@@ -12236,6 +12275,7 @@ function MentoraApp({ variant, os, density, scope,
           <BookingScreen V={V} dense={dense} mentor={mentor}
                          course={activeCourse}
                          goBack={goBack}
+                         profile={profile}
                          initialBookingState={initialBookingState}
                          onEnroll={DB ? handleEnroll : null}
                          onConfirmed={() => setScreen('courses')} />
