@@ -201,10 +201,12 @@ window.MENTORA_SUPABASE = {
         name: data.full_name,
         // DB stores 'mentor'; the app speaks 'teacher'. Map back.
         role: data.role === "mentor" ? "teacher" : (data.role || "learner"),
-        avatar: (data.avatar_url && !data.avatar_url.startsWith("data:")) ? data.avatar_url
-              : (data.avatar_url && data.avatar_url.length <= 8 ? data.avatar_url : null),
-        photoMode: data.avatar_url && data.avatar_url.startsWith("data:") ? "photo" : null,
-        photoSrc: data.avatar_url && data.avatar_url.startsWith("data:") ? data.avatar_url : null,
+        // avatar_url holds one of: an emoji (short), an uploaded data: URL, or an
+        // uploaded https:// storage URL. Treat BOTH URL kinds as a photo, and
+        // only a short non-URL string as an emoji avatar.
+        avatar: (data.avatar_url && !/^(data:|https?:)/.test(data.avatar_url)) ? data.avatar_url : null,
+        photoMode: (data.avatar_url && /^(data:|https?:)/.test(data.avatar_url)) ? "photo" : null,
+        photoSrc: (data.avatar_url && /^(data:|https?:)/.test(data.avatar_url)) ? data.avatar_url : null,
         // El Gouna town-record fields established at registration.
         unit: data.unit_number || null,
         zone: data.zone || null,
@@ -599,7 +601,7 @@ window.MENTORA_SUPABASE = {
         learner_id: session.user.id,
         course_id: p.course_id || null,
         amount: p.amount != null ? p.amount : null,
-        currency: p.currency || "USD",
+        currency: p.currency || "EGP",
         method: p.method || "card",          // 'apple_pay' | 'card'
         brand: p.brand || null,
         last4: p.last4 || null,
@@ -2235,7 +2237,7 @@ const REVIEWS_FOR_LAYLA = [
   {
     id: 'r2', author: 'Sarah P.', avatar: 'S', course: 'Sketching for Beginners',
     rating: 5, when: '1 week ago', mutual: '',
-    text: 'Best $39 I\'ve spent in a year. The community sketching prompt every Sunday is the part I look forward to most.',
+    text: 'Best money I\'ve spent in a year. The community sketching prompt every Sunday is the part I look forward to most.',
     helpful: 17,
   },
   {
@@ -2536,7 +2538,7 @@ const NOTIFICATIONS = {
       title: 'New 5★ review', body: 'Hassan left a review on Sketching for Beginners.',
       when: '4h', unread: true, action: 'Reply' },
     { id: 'tn4', group: 'Earlier this week', icon: '💰', kind: 'payout',
-      title: 'Payout sent', body: 'Your payout of $1,840 is on the way.',
+      title: 'Payout sent', body: 'Your monthly payout is on the way.',
       when: 'Tue', unread: false },
     { id: 'tn5', group: 'Earlier this week', icon: '📅', kind: 'session',
       title: 'Tomorrow’s roster', body: '12 students booked for Level 2 at Hamra Atelier.',
@@ -4221,7 +4223,7 @@ function HomeScreen({ V, dense, openMentor, openCourse, openReviews, openNotific
                 </div>
                 <span className="m-serif" style={{ fontSize: dense ? 15 : 16,
                   color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                  {c.price > 0 ? `$${c.price}` : 'Free'}
+                  {c.price > 0 ? `£E ${c.price}` : 'Free'}
                 </span>
               </button>
             );
@@ -4287,7 +4289,7 @@ function HomeScreen({ V, dense, openMentor, openCourse, openReviews, openNotific
                 <span className="m-serif" style={{
                   marginLeft: 'auto', fontSize: dense ? 15 : 16,
                   color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif",
-                }}>${c.price}</span>
+                }}>£E {c.price}</span>
               </div>
             </div>
           </button>
@@ -4658,7 +4660,7 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, notifU
             <div style={{ textAlign: 'right' }}>
               <div className="m-serif" style={{
                 fontSize: dense ? 16 : 18, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif",
-              }}>${c.price}</div>
+              }}>£E {c.price}</div>
               <div style={{ fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
                             letterSpacing: '0.1em' }}>{c.lessons} lessons</div>
             </div>
@@ -4939,6 +4941,7 @@ function CoursesScreen({ V, dense, role, openMentor, openCourse, openCreateCours
             rating: null, lessons: 0, price: 99, status: 'draft', nextSession: null },
         ];
     const totalEnrolled = myCourses.reduce((s, c) => s + (c.students || 0), 0);
+    const monthEarned = myCourses.reduce((s, c) => s + (c.students || 0) * (c.price || 0), 0);
     const pubCount = myCourses.filter(c => c.status === 'published').length;
     const draftCount = myCourses.filter(c => c.status === 'draft').length;
     const filters = [
@@ -4984,10 +4987,10 @@ function CoursesScreen({ V, dense, role, openMentor, openCourse, openCreateCours
                         backgroundImage: V.paper ? PAPER_NOISE : undefined,
                         backgroundSize: V.paper ? '240px 240px' : undefined }}>
             <div style={{ fontSize: 9.5, letterSpacing: '0.12em', textTransform: 'uppercase',
-                          color: V.inkMute, fontWeight: 600 }}>This month</div>
+                          color: V.inkMute, fontWeight: 600 }}>Earned</div>
             <div className="m-serif" style={{ fontSize: dense ? 18 : 20, color: V.accent, marginTop: 2,
                                               fontWeight: 600 }}>
-              $1,840
+              £E {monthEarned.toLocaleString()}
             </div>
           </div>
           <button onClick={openCreateCourse} className="m-tap" style={{
@@ -5072,7 +5075,7 @@ function CoursesScreen({ V, dense, role, openMentor, openCourse, openCreateCours
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                      ${c.price}
+                      £E {c.price}
                     </div>
                     <div style={{ fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
                                   letterSpacing: '0.1em' }}>
@@ -5537,7 +5540,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
         </div>
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-            {c.price > 0 ? `$${c.price}` : 'Free'}
+            {c.price > 0 ? `£E ${c.price}` : 'Free'}
           </div>
         </div>
       </button>
@@ -5781,7 +5784,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                      {c.price > 0 ? `$${c.price}` : 'Free'}
+                      {c.price > 0 ? `£E ${c.price}` : 'Free'}
                     </div>
                   </div>
                 </button>
@@ -5838,7 +5841,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                  ${c.price}
+                  £E {c.price}
                 </div>
               </div>
             </button>
@@ -7482,8 +7485,33 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMe
         display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center',
       }}>
         <div style={{ position: 'relative', marginBottom: dense ? 14 : 18 }}>
-          <MentorPhoto V={V} src={m.photo} alt={m.name}
-                       size={dense ? 140 : 168} rotation={-2.5} frame={true} />
+          {(() => {
+            const headerEmoji = m.avatarEmoji || (m.useAvatar && m.avatar);
+            const big = dense ? 140 : 168;
+            if (headerEmoji) {
+              return (
+                <div style={{
+                  width: big, height: big, borderRadius: '50%',
+                  background: V.accentBg, border: '4px solid #fffaf0',
+                  boxShadow: '0 6px 18px rgba(60,40,20,0.18)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}><AvatarFace ch={headerEmoji} size={dense ? 96 : 116} /></div>
+              );
+            }
+            if (m.photo) {
+              return <MentorPhoto V={V} src={m.photo} alt={m.name}
+                                  size={big} rotation={-2.5} frame={true} />;
+            }
+            return (
+              <div style={{
+                width: big, height: big, borderRadius: '50%',
+                background: V.accent, color: '#fffaf0', border: '4px solid #fffaf0',
+                boxShadow: '0 6px 18px rgba(60,40,20,0.18)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: 'Fredoka, sans-serif', fontWeight: 600, fontSize: dense ? 56 : 64,
+              }}>{m.initial || (m.name || 'M')[0] || 'M'}</div>
+            );
+          })()}
           {/* "tape" element on polaroid */}
           {V.polaroid && (
             <div style={{
@@ -7706,7 +7734,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMe
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div className="m-serif" style={{
                       fontSize: dense ? 17 : 19, color: V.ink, fontWeight: 600,
-                    }}>${c.price}</div>
+                    }}>£E {c.price}</div>
                     <div style={{
                       fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
                       letterSpacing: '0.1em',
@@ -9750,6 +9778,23 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
   const pad = dense ? 22 : 28;
   const isTeacher = role === 'teacher';
 
+  // Mentora is a gated El Gouna community — every field is required so we have a
+  // complete town record before letting anyone in. Nothing here is optional.
+  const ageNum = parseInt(form.age, 10);
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((form.email || '').trim());
+  const pwOk = (form.password || '').length >= 6;
+  const ageOk = !isNaN(ageNum) && ageNum >= 5 && ageNum <= 99;
+  const missing =
+    !(form.name || '').trim() ? 'enter your name'
+    : !emailOk ? 'enter a valid email'
+    : !pwOk ? 'create a password (6+ characters)'
+    : !(form.unit || '').trim() ? 'add your unit number'
+    : !(form.zone || '').trim() ? 'add your zone'
+    : !ageOk ? 'set your age'
+    : !agreed ? 'accept the community guidelines'
+    : '';
+  const formValid = missing === '';
+
   const learnerInterests = ['Watercolor', 'Cooking', 'Code', 'Yoga', 'Speaking', 'Finance'];
   const teacherCrafts    = ['Art & craft', 'Cooking', 'Tech', 'Wellness', 'Speaking', 'Music'];
   const chips = isTeacher ? teacherCrafts : learnerInterests;
@@ -10153,7 +10198,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
         padding: `${dense ? 10 : 16}px ${pad}px 0`,
         display: 'flex', flexDirection: 'column', gap: 10,
       }}>
-        <button onClick={() => onSubmit({ role, name: form.name, email: form.email, password: form.password, unit: form.unit, zone: form.zone, residency, accountType, age: form.age, photoMode, photoSrc, avatar: photoMode === 'avatar' ? AVATARS[avatarIdx] : null })} className="m-tap" disabled={!agreed || !(form.name || '').trim()}
+        <button onClick={() => onSubmit({ role, name: form.name, email: form.email, password: form.password, unit: form.unit, zone: form.zone, residency, accountType, age: form.age, photoMode, photoSrc, avatar: photoMode === 'avatar' ? AVATARS[avatarIdx] : null })} className="m-tap" disabled={!formValid}
           style={{
             position: 'relative', overflow: 'hidden',
             background: V.accent, color: '#fffaf0',
@@ -10161,7 +10206,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
             fontSize: 15, fontWeight: 600, letterSpacing: '0.01em',
             boxShadow: `0 10px 22px ${V.accent}40`,
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            opacity: (agreed && (form.name || '').trim()) ? 1 : 0.4,
+            opacity: formValid ? 1 : 0.4,
             transition: 'opacity .2s ease, transform .2s ease, box-shadow .2s ease',
           }}>
           {/* sweep shine */}
@@ -10183,7 +10228,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
         </button>
         <div className="m-hand" style={{
           textAlign: 'center', color: V.inkMute, fontSize: 14,
-        }}>{(form.name || '').trim() ? '— takes less than a minute —' : '— enter your name to continue —'}</div>
+        }}>{formValid ? '— takes less than a minute —' : '— ' + missing + ' to continue —'}</div>
       </div>
       </BlurFade>
     </div>
@@ -12782,9 +12827,20 @@ Object.assign(window, { MentoraApp });
 // Renders the Mentora app filling the whole viewport (os="bare").
 const { MentoraApp } = window;
 
+// ── Editor-preview skip ──────────────────────────────────────────────────
+// ONLY inside the Claude editor preview (claudeusercontent.com) do we skip the
+// onboarding and land straight on Home, so iterating on the app stays fast.
+// On the real deployed site this is ALWAYS false — visitors always get the
+// full welcome → landing → role → sign-up flow.
+function isEditorPreview() {
+  try { return /(^|\.)claudeusercontent\.com$/.test(location.hostname); }
+  catch (e) { return false; }
+}
+
 function MobileApp() {
   // Constrain to a phone-width column so it looks right on desktop too;
   // on actual phones (<=440px) it fills edge-to-edge.
+  const preview = isEditorPreview();
   return (
     <div style={{
       position: 'fixed', inset: 0, background: '#1a1410',
@@ -12794,7 +12850,8 @@ function MobileApp() {
       <div className="m-app-col">
         <MentoraApp variant="spark" os="ios" density="cozy" scope="app"
                     fullScreen={true}
-                    initialScreen="welcome" />
+                    initialScreen={preview ? 'home' : 'welcome'}
+                    initialRole="learner" />
       </div>
     </div>
   );
