@@ -19,13 +19,6 @@
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #000; font-family: 'Inter', -apple-system, system-ui, sans-serif; overflow: hidden; }
   #root { height: 100%; }
-  /* App column: fills edge-to-edge on ANY phone (incl. iPhone Pro Max, 430px,
-     and large Androids up to ~480px). Only on wider/desktop viewports does it
-     become a centered phone-width column with a drop shadow. */
-  .m-app-col { width: 100%; height: 100%; position: relative; overflow: hidden; }
-  @media (min-width: 540px) {
-    .m-app-col { max-width: 402px; box-shadow: 0 0 60px rgba(0,0,0,0.4); }
-  }
 </style>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
@@ -201,12 +194,10 @@ window.MENTORA_SUPABASE = {
         name: data.full_name,
         // DB stores 'mentor'; the app speaks 'teacher'. Map back.
         role: data.role === "mentor" ? "teacher" : (data.role || "learner"),
-        // avatar_url holds one of: an emoji (short), an uploaded data: URL, or an
-        // uploaded https:// storage URL. Treat BOTH URL kinds as a photo, and
-        // only a short non-URL string as an emoji avatar.
-        avatar: (data.avatar_url && !/^(data:|https?:)/.test(data.avatar_url)) ? data.avatar_url : null,
-        photoMode: (data.avatar_url && /^(data:|https?:)/.test(data.avatar_url)) ? "photo" : null,
-        photoSrc: (data.avatar_url && /^(data:|https?:)/.test(data.avatar_url)) ? data.avatar_url : null,
+        avatar: (data.avatar_url && !data.avatar_url.startsWith("data:")) ? data.avatar_url
+              : (data.avatar_url && data.avatar_url.length <= 8 ? data.avatar_url : null),
+        photoMode: data.avatar_url && data.avatar_url.startsWith("data:") ? "photo" : null,
+        photoSrc: data.avatar_url && data.avatar_url.startsWith("data:") ? data.avatar_url : null,
         // El Gouna town-record fields established at registration.
         unit: data.unit_number || null,
         zone: data.zone || null,
@@ -601,7 +592,7 @@ window.MENTORA_SUPABASE = {
         learner_id: session.user.id,
         course_id: p.course_id || null,
         amount: p.amount != null ? p.amount : null,
-        currency: p.currency || "EGP",
+        currency: p.currency || "USD",
         method: p.method || "card",          // 'apple_pay' | 'card'
         brand: p.brand || null,
         last4: p.last4 || null,
@@ -2237,7 +2228,7 @@ const REVIEWS_FOR_LAYLA = [
   {
     id: 'r2', author: 'Sarah P.', avatar: 'S', course: 'Sketching for Beginners',
     rating: 5, when: '1 week ago', mutual: '',
-    text: 'Best money I\'ve spent in a year. The community sketching prompt every Sunday is the part I look forward to most.',
+    text: 'Best $39 I\'ve spent in a year. The community sketching prompt every Sunday is the part I look forward to most.',
     helpful: 17,
   },
   {
@@ -2538,7 +2529,7 @@ const NOTIFICATIONS = {
       title: 'New 5★ review', body: 'Hassan left a review on Sketching for Beginners.',
       when: '4h', unread: true, action: 'Reply' },
     { id: 'tn4', group: 'Earlier this week', icon: '💰', kind: 'payout',
-      title: 'Payout sent', body: 'Your monthly payout is on the way.',
+      title: 'Payout sent', body: 'Your payout of $1,840 is on the way.',
       when: 'Tue', unread: false },
     { id: 'tn5', group: 'Earlier this week', icon: '📅', kind: 'session',
       title: 'Tomorrow’s roster', body: '12 students booked for Level 2 at Hamra Atelier.',
@@ -3292,18 +3283,13 @@ const NOTO_CP = {
   '🦊':'1f98a','🐻':'1f43b','🦉':'1f989','🐼':'1f43c','🐸':'1f438','🦁':'1f981',
   '🐙':'1f419','🦋':'1f98b','🐢':'1f422','🐧':'1f427','🐱':'1f431','🦄':'1f984','🦦':'1f9a6','🥸':'1f978',
   '🦇':'1f987','🐺':'1f43a','🦥':'1f9a5','🦭':'1f9ad','🦩':'1f9a9','🦅':'1f985',
-  '🐕':'1f415','🦍':'1f98d','🦘':'1f998','🐮':'1f42e','🦚':'1f99a',
-  '🐬':'1f42c','🦈':'1f988','🦞':'1f99e','🐡':'1f421','🐝':'1f41d','🐉':'1f409',
 };
 const notoSrc = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/latest/${NOTO_CP[ch]}/512.webp` : null;
 // STATIC frame (PNG) — used for the many wheel thumbnails. Animated WebP for all
 // of them at once tanks scrolling to ~5fps; only the centred avatar animates.
 const notoStatic = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/latest/${NOTO_CP[ch]}/512.png` : null;
 // Curated avatar set — every animal here has a Noto animation.
-const AVATAR_SET = [
-  '🦊','🐻','🦉','🐺','🦇','🦁','🐙','🦅','🐧','🦥','🦄','🦦','🦭','🦩',
-  '🐕','🐼','🐱','🦍','🦘','🐮','🦚','🐬','🦈','🦞','🐡','🐝','🐉',
-];
+const AVATAR_SET = ['🦊','🐻','🦉','🐺','🦇','🦁','🐙','🦅','🐧','🦥','🦄','🦦','🦭','🦩'];
 // Warm the thumbnail cache at load so the picker wheel never pops in image-by-
 // image the first time it's opened.
 if (typeof Image !== 'undefined') {
@@ -4223,7 +4209,7 @@ function HomeScreen({ V, dense, openMentor, openCourse, openReviews, openNotific
                 </div>
                 <span className="m-serif" style={{ fontSize: dense ? 15 : 16,
                   color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                  {c.price > 0 ? `£E ${c.price}` : 'Free'}
+                  {c.price > 0 ? `$${c.price}` : 'Free'}
                 </span>
               </button>
             );
@@ -4289,7 +4275,7 @@ function HomeScreen({ V, dense, openMentor, openCourse, openReviews, openNotific
                 <span className="m-serif" style={{
                   marginLeft: 'auto', fontSize: dense ? 15 : 16,
                   color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif",
-                }}>£E {c.price}</span>
+                }}>${c.price}</span>
               </div>
             </div>
           </button>
@@ -4660,7 +4646,7 @@ function TeacherProfileScreen({ V, dense, openReviews, openNotifications, notifU
             <div style={{ textAlign: 'right' }}>
               <div className="m-serif" style={{
                 fontSize: dense ? 16 : 18, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif",
-              }}>£E {c.price}</div>
+              }}>${c.price}</div>
               <div style={{ fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
                             letterSpacing: '0.1em' }}>{c.lessons} lessons</div>
             </div>
@@ -4941,7 +4927,6 @@ function CoursesScreen({ V, dense, role, openMentor, openCourse, openCreateCours
             rating: null, lessons: 0, price: 99, status: 'draft', nextSession: null },
         ];
     const totalEnrolled = myCourses.reduce((s, c) => s + (c.students || 0), 0);
-    const monthEarned = myCourses.reduce((s, c) => s + (c.students || 0) * (c.price || 0), 0);
     const pubCount = myCourses.filter(c => c.status === 'published').length;
     const draftCount = myCourses.filter(c => c.status === 'draft').length;
     const filters = [
@@ -4987,10 +4972,10 @@ function CoursesScreen({ V, dense, role, openMentor, openCourse, openCreateCours
                         backgroundImage: V.paper ? PAPER_NOISE : undefined,
                         backgroundSize: V.paper ? '240px 240px' : undefined }}>
             <div style={{ fontSize: 9.5, letterSpacing: '0.12em', textTransform: 'uppercase',
-                          color: V.inkMute, fontWeight: 600 }}>Earned</div>
+                          color: V.inkMute, fontWeight: 600 }}>This month</div>
             <div className="m-serif" style={{ fontSize: dense ? 18 : 20, color: V.accent, marginTop: 2,
                                               fontWeight: 600 }}>
-              £E {monthEarned.toLocaleString()}
+              $1,840
             </div>
           </div>
           <button onClick={openCreateCourse} className="m-tap" style={{
@@ -5075,7 +5060,7 @@ function CoursesScreen({ V, dense, role, openMentor, openCourse, openCreateCours
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                      £E {c.price}
+                      ${c.price}
                     </div>
                     <div style={{ fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
                                   letterSpacing: '0.1em' }}>
@@ -5540,7 +5525,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
         </div>
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-            {c.price > 0 ? `£E ${c.price}` : 'Free'}
+            {c.price > 0 ? `$${c.price}` : 'Free'}
           </div>
         </div>
       </button>
@@ -5784,7 +5769,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                      {c.price > 0 ? `£E ${c.price}` : 'Free'}
+                      {c.price > 0 ? `$${c.price}` : 'Free'}
                     </div>
                   </div>
                 </button>
@@ -5841,7 +5826,7 @@ function ExploreScreen({ V, dense, openMentor, liveCourses, liveMentors }) {
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div className="m-serif" style={{ fontSize: 17, color: V.ink, fontWeight: 500, fontFamily: "Fredoka, sans-serif" }}>
-                  £E {c.price}
+                  ${c.price}
                 </div>
               </div>
             </button>
@@ -6155,7 +6140,7 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
 
   // Notification preferences persist across sessions.
   const [notifs, setNotifs] = useState(() => {
-    const defaults = { purchases: true, reviews: true, messages: true };
+    const defaults = { purchases: true, reviews: true, messages: true, digest: false };
     try { return { ...defaults, ...JSON.parse(localStorage.getItem('mentora_notif_prefs') || '{}') }; }
     catch (e) { return defaults; }
   });
@@ -6328,6 +6313,7 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
           ['purchases', isTeacher ? 'New enrolments' : 'New courses from friends'],
           ['reviews',   'Reviews & ratings'],
           ['messages',  'Direct messages'],
+          ['digest',    'Weekly community digest'],
         ].map(([key, label], i, arr) => (
           <React.Fragment key={key}>
             <div style={{
@@ -7485,33 +7471,8 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMe
         display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center',
       }}>
         <div style={{ position: 'relative', marginBottom: dense ? 14 : 18 }}>
-          {(() => {
-            const headerEmoji = m.avatarEmoji || (m.useAvatar && m.avatar);
-            const big = dense ? 140 : 168;
-            if (headerEmoji) {
-              return (
-                <div style={{
-                  width: big, height: big, borderRadius: '50%',
-                  background: V.accentBg, border: '4px solid #fffaf0',
-                  boxShadow: '0 6px 18px rgba(60,40,20,0.18)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}><AvatarFace ch={headerEmoji} size={dense ? 96 : 116} /></div>
-              );
-            }
-            if (m.photo) {
-              return <MentorPhoto V={V} src={m.photo} alt={m.name}
-                                  size={big} rotation={-2.5} frame={true} />;
-            }
-            return (
-              <div style={{
-                width: big, height: big, borderRadius: '50%',
-                background: V.accent, color: '#fffaf0', border: '4px solid #fffaf0',
-                boxShadow: '0 6px 18px rgba(60,40,20,0.18)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontFamily: 'Fredoka, sans-serif', fontWeight: 600, fontSize: dense ? 56 : 64,
-              }}>{m.initial || (m.name || 'M')[0] || 'M'}</div>
-            );
-          })()}
+          <MentorPhoto V={V} src={m.photo} alt={m.name}
+                       size={dense ? 140 : 168} rotation={-2.5} frame={true} />
           {/* "tape" element on polaroid */}
           {V.polaroid && (
             <div style={{
@@ -7734,7 +7695,7 @@ function MentorScreen({ V, dense, mentor, goBack, openReviews, openBooking, onMe
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div className="m-serif" style={{
                       fontSize: dense ? 17 : 19, color: V.ink, fontWeight: 600,
-                    }}>£E {c.price}</div>
+                    }}>${c.price}</div>
                     <div style={{
                       fontSize: 9.5, color: V.inkMute, textTransform: 'uppercase',
                       letterSpacing: '0.1em',
@@ -9196,86 +9157,11 @@ function CourseMap({ V, lat, lng, height = 150 }) {
 }
 
 // ─────────────────────────────────────────────────────────
-// Smart class-icon resolver. The mentor never picks an emoji by hand — it is
-// derived from the category, then refined by keywords in the class name, so the
-// catalog stays visually consistent and conflict-free. El Gouna's water-sports
-// vocabulary is first-class here (sail, kite, dive, snorkel…).
-// ─────────────────────────────────────────────────────────
-const CAT_ICON = {
-  creative: '🎨', lifestyle: '🍳', tech: '💻',
-  wellness: '🧘', language: '🗣️', business: '💼', other: '✨',
-};
-const ICON_RULES = [
-  [/water ?colou?r|paint|acrylic|oil ?paint|mural/, '🎨'],
-  [/draw|sketch|pencil|charcoal|illustrat|comic|manga/, '✏️'],
-  [/calligraph|letter|typograph|handletter/, '🖋️'],
-  [/photo|camera|lightroom|portrait shoot/, '📷'],
-  [/film|video|cinema|movie|reel|editing/, '🎬'],
-  [/pott|ceramic|clay|wheel throw/, '🏺'],
-  [/sew|stitch|embroid|knit|crochet|tailor|quilt/, '🧵'],
-  [/jewel|bead|macrame|resin|candle|soap|craft/, '🪡'],
-  [/guitar|oud|ukulele/, '🎸'],
-  [/piano|keyboard/, '🎹'],
-  [/violin|cello|string ensemble/, '🎻'],
-  [/drum|percuss|tabla|darbuka/, '🥁'],
-  [/sing|vocal|choir|song|opera/, '🎤'],
-  [/music|compos|producer|beat|dj|mixing/, '🎵'],
-  [/dance|ballet|salsa|zumba|hip ?hop|belly ?danc|contempor/, '💃'],
-  [/cook|chef|culinar|recipe|kitchen|cuisine|grill/, '🍳'],
-  [/bak|pastry|cake|dessert|bread|patisserie/, '🧁'],
-  [/coffee|barista|espresso/, '☕'],
-  [/wine|cocktail|mixolog|mocktail/, '🍷'],
-  [/garden|plant|horticult|herb/, '🪴'],
-  [/yoga|vinyasa|hatha/, '🧘'],
-  [/meditat|mindful|breath|sound ?bath/, '🧠'],
-  [/pilates|stretch|mobility|flexibil/, '🤸'],
-  [/gym|fitness|strength|weight|workout|crossfit|hiit|bootcamp/, '🏋️'],
-  [/run|marathon|jog|trail/, '🏃'],
-  [/box|martial|karate|judo|kickbox|muay|taekwon|jiu/, '🥊'],
-  [/swim|aqua/, '🏊'],
-  [/dive|snorkel|scuba|freediv|reef/, '🤿'],
-  [/sail|felucca|boat|yacht|catamaran/, '⛵'],
-  [/kite ?surf|kiteboard|wind ?surf|wing ?foil/, '🪁'],
-  [/surf|paddle ?board|sup\b/, '🏄'],
-  [/fish|angling/, '🎣'],
-  [/tennis|padel|squash|pickleball/, '🎾'],
-  [/football|soccer/, '⚽'],
-  [/basketball/, '🏀'],
-  [/golf/, '⛳'],
-  [/cycl|spin|bike|mtb/, '🚴'],
-  [/horse|equestrian|riding/, '🐴'],
-  [/cod(e|ing)|program|web ?dev|app dev|python|javascript|software|develop|data ?sci|\bai\b|machine ?learn/, '💻'],
-  [/design|figma|ux|ui|graphic|branding/, '🎨'],
-  [/3d|blender|cad|render|model(l)?ing/, '🧊'],
-  [/robot|electron|arduino|iot|drone/, '🤖'],
-  [/game|gaming|unity|unreal|esports/, '🎮'],
-  [/crypto|blockchain|web3|nft/, '🪙'],
-  [/english|arabic|french|spanish|german|italian|russian|language|grammar|ielts|toefl/, '🗣️'],
-  [/speak|present|pitch|debate|public ?speak/, '🎤'],
-  [/writ|poet|story|novel|script|copywrit|blog/, '✍️'],
-  [/read|book club|literatur/, '📖'],
-  [/finance|invest|stock|trad|money|account|budget|tax/, '📈'],
-  [/business|startup|entrepreneur|market|brand|sales|freelanc/, '💼'],
-  [/chess/, '♟️'],
-  [/math|physic|chemistr|biolog|science|tutor|exam prep/, '🧪'],
-  [/kid|child|toddler|baby|montessori/, '🧒'],
-  [/makeup|beauty|skincare|hair|nail|grooming/, '💄'],
-  [/fashion|style|outfit|styling/, '👗'],
-  [/magic|illusion/, '🎩'],
-  [/astronom|star ?gaz|telescope/, '🔭'],
-  [/first ?aid|cpr|safety|rescue/, '🚑'],
-];
-function pickClassIcon(title, category) {
-  const t = (title || '').toLowerCase().trim();
-  if (t) { for (let i = 0; i < ICON_RULES.length; i++) { if (ICON_RULES[i][0].test(t)) return ICON_RULES[i][1]; } }
-  return CAT_ICON[category] || '📚';
-}
-
-// ─────────────────────────────────────────────────────────
 // CREATE COURSE — teacher adds a class (writes to DB on deployed build)
 // ─────────────────────────────────────────────────────────
 function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
   const pad = dense ? 22 : 28;
+  const EMOJIS = ['🎨','🍳','💻','🧘','🎤','💰','📷','🎸','🪡','🌿','📖','🎭'];
   const CATS = [
     { k: 'creative', label: 'Art & Craft' },
     { k: 'lifestyle', label: 'Cooking & Home' },
@@ -9293,12 +9179,6 @@ function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
   const [focus, setFocus] = useState(null);
   const [err, setErr] = useState('');
   const set = (k, v) => setC(p => ({ ...p, [k]: v }));
-
-  // Auto-resolve the class icon from category + class name. The mentor never
-  // chooses an emoji by hand, so the catalog stays consistent.
-  React.useEffect(() => {
-    setC(p => { const next = pickClassIcon(p.title, p.category); return p.emoji === next ? p : { ...p, emoji: next }; });
-  }, [c.title, c.category]);
 
   // Media (photo/video) the teacher uploads to market the class.
   const [media, setMedia] = useState(null);        // dataURL
@@ -9411,33 +9291,28 @@ function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
       </BlurFade>
 
       <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
-        <style>{`@keyframes m-iconpop{0%{transform:scale(.55);opacity:.2}60%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}`}</style>
-        {Field('title', 'Class name', { ph: 'e.g. Modern Watercolor' })}
-
-        {/* Auto class icon — derived from category + name, not editable */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 14,
-          background: V.surface, border: `1px solid ${V.rule}`,
-          borderRadius: 14, padding: '12px 14px',
-        }}>
-          <div key={c.emoji} style={{
-            width: 56, height: 56, borderRadius: 16, fontSize: 28, flexShrink: 0,
-            background: V.accentBg, border: `1px solid ${V.accent}33`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            animation: 'm-iconpop .38s cubic-bezier(.2,.8,.2,1)',
-          }}>{c.emoji}</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 13.5, fontWeight: 700, color: V.ink }}>Class icon</span>
-              <span style={{ fontSize: 9.5, letterSpacing: '0.1em', textTransform: 'uppercase',
-                fontWeight: 700, color: V.ribbon, background: `${V.ribbon}1a`,
-                padding: '2px 7px', borderRadius: 100 }}>Auto</span>
-            </div>
-            <div style={{ fontSize: 12, color: V.inkMute, lineHeight: 1.4, marginTop: 3 }}>
-              Picked from your category{c.title.trim() ? ' & class name' : ''} to keep the catalog tidy.
-            </div>
+        {/* Emoji picker */}
+        <div>
+          <div style={labelStyle}>Pick an icon</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {EMOJIS.map(e => {
+              const on = c.emoji === e;
+              return (
+                <button key={e} type="button" onClick={() => set('emoji', e)} className="m-tap" style={{
+                  width: 42, height: 42, borderRadius: 12, fontSize: 22,
+                  background: on ? V.accent : V.surface,
+                  border: `1px solid ${on ? V.accent : V.rule}`,
+                  boxShadow: on ? `0 6px 14px ${V.accent}40` : 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'background .15s ease, transform .15s ease',
+                  transform: on ? 'scale(1.05)' : 'scale(1)',
+                }}>{e}</button>
+              );
+            })}
           </div>
         </div>
+
+        {Field('title', 'Class name', { ph: 'e.g. Modern Watercolor' })}
 
         {/* Category chips */}
         <div>
@@ -9777,23 +9652,6 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
   const [kids, setKids] = useState([]);
   const pad = dense ? 22 : 28;
   const isTeacher = role === 'teacher';
-
-  // Mentora is a gated El Gouna community — every field is required so we have a
-  // complete town record before letting anyone in. Nothing here is optional.
-  const ageNum = parseInt(form.age, 10);
-  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((form.email || '').trim());
-  const pwOk = (form.password || '').length >= 6;
-  const ageOk = !isNaN(ageNum) && ageNum >= 5 && ageNum <= 99;
-  const missing =
-    !(form.name || '').trim() ? 'enter your name'
-    : !emailOk ? 'enter a valid email'
-    : !pwOk ? 'create a password (6+ characters)'
-    : !(form.unit || '').trim() ? 'add your unit number'
-    : !(form.zone || '').trim() ? 'add your zone'
-    : !ageOk ? 'set your age'
-    : !agreed ? 'accept the community guidelines'
-    : '';
-  const formValid = missing === '';
 
   const learnerInterests = ['Watercolor', 'Cooking', 'Code', 'Yoga', 'Speaking', 'Finance'];
   const teacherCrafts    = ['Art & craft', 'Cooking', 'Tech', 'Wellness', 'Speaking', 'Music'];
@@ -10198,7 +10056,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
         padding: `${dense ? 10 : 16}px ${pad}px 0`,
         display: 'flex', flexDirection: 'column', gap: 10,
       }}>
-        <button onClick={() => onSubmit({ role, name: form.name, email: form.email, password: form.password, unit: form.unit, zone: form.zone, residency, accountType, age: form.age, photoMode, photoSrc, avatar: photoMode === 'avatar' ? AVATARS[avatarIdx] : null })} className="m-tap" disabled={!formValid}
+        <button onClick={() => onSubmit({ role, name: form.name, email: form.email, password: form.password, unit: form.unit, zone: form.zone, residency, accountType, age: form.age, photoMode, photoSrc, avatar: photoMode === 'avatar' ? AVATARS[avatarIdx] : null })} className="m-tap" disabled={!agreed || !(form.name || '').trim()}
           style={{
             position: 'relative', overflow: 'hidden',
             background: V.accent, color: '#fffaf0',
@@ -10206,7 +10064,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
             fontSize: 15, fontWeight: 600, letterSpacing: '0.01em',
             boxShadow: `0 10px 22px ${V.accent}40`,
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            opacity: formValid ? 1 : 0.4,
+            opacity: (agreed && (form.name || '').trim()) ? 1 : 0.4,
             transition: 'opacity .2s ease, transform .2s ease, box-shadow .2s ease',
           }}>
           {/* sweep shine */}
@@ -10228,7 +10086,7 @@ function RegisterScreen({ V, dense, os, role, onSubmit, goBack }) {
         </button>
         <div className="m-hand" style={{
           textAlign: 'center', color: V.inkMute, fontSize: 14,
-        }}>{formValid ? '— takes less than a minute —' : '— ' + missing + ' to continue —'}</div>
+        }}>{(form.name || '').trim() ? '— takes less than a minute —' : '— enter your name to continue —'}</div>
       </div>
       </BlurFade>
     </div>
@@ -12827,31 +12685,23 @@ Object.assign(window, { MentoraApp });
 // Renders the Mentora app filling the whole viewport (os="bare").
 const { MentoraApp } = window;
 
-// ── Editor-preview skip ──────────────────────────────────────────────────
-// ONLY inside the Claude editor preview (claudeusercontent.com) do we skip the
-// onboarding and land straight on Home, so iterating on the app stays fast.
-// On the real deployed site this is ALWAYS false — visitors always get the
-// full welcome → landing → role → sign-up flow.
-function isEditorPreview() {
-  try { return /(^|\.)claudeusercontent\.com$/.test(location.hostname); }
-  catch (e) { return false; }
-}
-
 function MobileApp() {
   // Constrain to a phone-width column so it looks right on desktop too;
   // on actual phones (<=440px) it fills edge-to-edge.
-  const preview = isEditorPreview();
   return (
     <div style={{
       position: 'fixed', inset: 0, background: '#1a1410',
       display: 'flex', justifyContent: 'center', alignItems: 'stretch',
       overflow: 'hidden',
     }}>
-      <div className="m-app-col">
+      <div style={{
+        width: '100%', maxWidth: 402, height: '100%',
+        position: 'relative', overflow: 'hidden',
+        boxShadow: '0 0 60px rgba(0,0,0,0.4)',
+      }}>
         <MentoraApp variant="spark" os="ios" density="cozy" scope="app"
                     fullScreen={true}
-                    initialScreen={preview ? 'home' : 'welcome'}
-                    initialRole="learner" />
+                    initialScreen="welcome" />
       </div>
     </div>
   );
