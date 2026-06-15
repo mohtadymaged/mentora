@@ -19,6 +19,13 @@
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #000; font-family: 'Inter', -apple-system, system-ui, sans-serif; overflow: hidden; }
   #root { height: 100%; }
+  /* App column: fills edge-to-edge on ANY phone (incl. iPhone Pro Max, 430px,
+     and large Androids up to ~480px). Only on wider/desktop viewports does it
+     become a centered phone-width column with a drop shadow. */
+  .m-app-col { width: 100%; height: 100%; position: relative; overflow: hidden; }
+  @media (min-width: 540px) {
+    .m-app-col { max-width: 402px; box-shadow: 0 0 60px rgba(0,0,0,0.4); }
+  }
 </style>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
@@ -3283,13 +3290,18 @@ const NOTO_CP = {
   '🦊':'1f98a','🐻':'1f43b','🦉':'1f989','🐼':'1f43c','🐸':'1f438','🦁':'1f981',
   '🐙':'1f419','🦋':'1f98b','🐢':'1f422','🐧':'1f427','🐱':'1f431','🦄':'1f984','🦦':'1f9a6','🥸':'1f978',
   '🦇':'1f987','🐺':'1f43a','🦥':'1f9a5','🦭':'1f9ad','🦩':'1f9a9','🦅':'1f985',
+  '🐕':'1f415','🦍':'1f98d','🦘':'1f998','🐮':'1f42e','🦚':'1f99a',
+  '🐬':'1f42c','🦈':'1f988','🦞':'1f99e','🐡':'1f421','🐝':'1f41d','🐉':'1f409',
 };
 const notoSrc = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/latest/${NOTO_CP[ch]}/512.webp` : null;
 // STATIC frame (PNG) — used for the many wheel thumbnails. Animated WebP for all
 // of them at once tanks scrolling to ~5fps; only the centred avatar animates.
 const notoStatic = (ch) => NOTO_CP[ch] ? `https://fonts.gstatic.com/s/e/notoemoji/latest/${NOTO_CP[ch]}/512.png` : null;
 // Curated avatar set — every animal here has a Noto animation.
-const AVATAR_SET = ['🦊','🐻','🦉','🐺','🦇','🦁','🐙','🦅','🐧','🦥','🦄','🦦','🦭','🦩'];
+const AVATAR_SET = [
+  '🦊','🐻','🦉','🐺','🦇','🦁','🐙','🦅','🐧','🦥','🦄','🦦','🦭','🦩',
+  '🐕','🐼','🐱','🦍','🦘','🐮','🦚','🐬','🦈','🦞','🐡','🐝','🐉',
+];
 // Warm the thumbnail cache at load so the picker wheel never pops in image-by-
 // image the first time it's opened.
 if (typeof Image !== 'undefined') {
@@ -6140,7 +6152,7 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
 
   // Notification preferences persist across sessions.
   const [notifs, setNotifs] = useState(() => {
-    const defaults = { purchases: true, reviews: true, messages: true, digest: false };
+    const defaults = { purchases: true, reviews: true, messages: true };
     try { return { ...defaults, ...JSON.parse(localStorage.getItem('mentora_notif_prefs') || '{}') }; }
     catch (e) { return defaults; }
   });
@@ -6313,7 +6325,6 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
           ['purchases', isTeacher ? 'New enrolments' : 'New courses from friends'],
           ['reviews',   'Reviews & ratings'],
           ['messages',  'Direct messages'],
-          ['digest',    'Weekly community digest'],
         ].map(([key, label], i, arr) => (
           <React.Fragment key={key}>
             <div style={{
@@ -9157,11 +9168,86 @@ function CourseMap({ V, lat, lng, height = 150 }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// Smart class-icon resolver. The mentor never picks an emoji by hand — it is
+// derived from the category, then refined by keywords in the class name, so the
+// catalog stays visually consistent and conflict-free. El Gouna's water-sports
+// vocabulary is first-class here (sail, kite, dive, snorkel…).
+// ─────────────────────────────────────────────────────────
+const CAT_ICON = {
+  creative: '🎨', lifestyle: '🍳', tech: '💻',
+  wellness: '🧘', language: '🗣️', business: '💼', other: '✨',
+};
+const ICON_RULES = [
+  [/water ?colou?r|paint|acrylic|oil ?paint|mural/, '🎨'],
+  [/draw|sketch|pencil|charcoal|illustrat|comic|manga/, '✏️'],
+  [/calligraph|letter|typograph|handletter/, '🖋️'],
+  [/photo|camera|lightroom|portrait shoot/, '📷'],
+  [/film|video|cinema|movie|reel|editing/, '🎬'],
+  [/pott|ceramic|clay|wheel throw/, '🏺'],
+  [/sew|stitch|embroid|knit|crochet|tailor|quilt/, '🧵'],
+  [/jewel|bead|macrame|resin|candle|soap|craft/, '🪡'],
+  [/guitar|oud|ukulele/, '🎸'],
+  [/piano|keyboard/, '🎹'],
+  [/violin|cello|string ensemble/, '🎻'],
+  [/drum|percuss|tabla|darbuka/, '🥁'],
+  [/sing|vocal|choir|song|opera/, '🎤'],
+  [/music|compos|producer|beat|dj|mixing/, '🎵'],
+  [/dance|ballet|salsa|zumba|hip ?hop|belly ?danc|contempor/, '💃'],
+  [/cook|chef|culinar|recipe|kitchen|cuisine|grill/, '🍳'],
+  [/bak|pastry|cake|dessert|bread|patisserie/, '🧁'],
+  [/coffee|barista|espresso/, '☕'],
+  [/wine|cocktail|mixolog|mocktail/, '🍷'],
+  [/garden|plant|horticult|herb/, '🪴'],
+  [/yoga|vinyasa|hatha/, '🧘'],
+  [/meditat|mindful|breath|sound ?bath/, '🧠'],
+  [/pilates|stretch|mobility|flexibil/, '🤸'],
+  [/gym|fitness|strength|weight|workout|crossfit|hiit|bootcamp/, '🏋️'],
+  [/run|marathon|jog|trail/, '🏃'],
+  [/box|martial|karate|judo|kickbox|muay|taekwon|jiu/, '🥊'],
+  [/swim|aqua/, '🏊'],
+  [/dive|snorkel|scuba|freediv|reef/, '🤿'],
+  [/sail|felucca|boat|yacht|catamaran/, '⛵'],
+  [/kite ?surf|kiteboard|wind ?surf|wing ?foil/, '🪁'],
+  [/surf|paddle ?board|sup\b/, '🏄'],
+  [/fish|angling/, '🎣'],
+  [/tennis|padel|squash|pickleball/, '🎾'],
+  [/football|soccer/, '⚽'],
+  [/basketball/, '🏀'],
+  [/golf/, '⛳'],
+  [/cycl|spin|bike|mtb/, '🚴'],
+  [/horse|equestrian|riding/, '🐴'],
+  [/cod(e|ing)|program|web ?dev|app dev|python|javascript|software|develop|data ?sci|\bai\b|machine ?learn/, '💻'],
+  [/design|figma|ux|ui|graphic|branding/, '🎨'],
+  [/3d|blender|cad|render|model(l)?ing/, '🧊'],
+  [/robot|electron|arduino|iot|drone/, '🤖'],
+  [/game|gaming|unity|unreal|esports/, '🎮'],
+  [/crypto|blockchain|web3|nft/, '🪙'],
+  [/english|arabic|french|spanish|german|italian|russian|language|grammar|ielts|toefl/, '🗣️'],
+  [/speak|present|pitch|debate|public ?speak/, '🎤'],
+  [/writ|poet|story|novel|script|copywrit|blog/, '✍️'],
+  [/read|book club|literatur/, '📖'],
+  [/finance|invest|stock|trad|money|account|budget|tax/, '📈'],
+  [/business|startup|entrepreneur|market|brand|sales|freelanc/, '💼'],
+  [/chess/, '♟️'],
+  [/math|physic|chemistr|biolog|science|tutor|exam prep/, '🧪'],
+  [/kid|child|toddler|baby|montessori/, '🧒'],
+  [/makeup|beauty|skincare|hair|nail|grooming/, '💄'],
+  [/fashion|style|outfit|styling/, '👗'],
+  [/magic|illusion/, '🎩'],
+  [/astronom|star ?gaz|telescope/, '🔭'],
+  [/first ?aid|cpr|safety|rescue/, '🚑'],
+];
+function pickClassIcon(title, category) {
+  const t = (title || '').toLowerCase().trim();
+  if (t) { for (let i = 0; i < ICON_RULES.length; i++) { if (ICON_RULES[i][0].test(t)) return ICON_RULES[i][1]; } }
+  return CAT_ICON[category] || '📚';
+}
+
+// ─────────────────────────────────────────────────────────
 // CREATE COURSE — teacher adds a class (writes to DB on deployed build)
 // ─────────────────────────────────────────────────────────
 function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
   const pad = dense ? 22 : 28;
-  const EMOJIS = ['🎨','🍳','💻','🧘','🎤','💰','📷','🎸','🪡','🌿','📖','🎭'];
   const CATS = [
     { k: 'creative', label: 'Art & Craft' },
     { k: 'lifestyle', label: 'Cooking & Home' },
@@ -9179,6 +9265,12 @@ function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
   const [focus, setFocus] = useState(null);
   const [err, setErr] = useState('');
   const set = (k, v) => setC(p => ({ ...p, [k]: v }));
+
+  // Auto-resolve the class icon from category + class name. The mentor never
+  // chooses an emoji by hand, so the catalog stays consistent.
+  React.useEffect(() => {
+    setC(p => { const next = pickClassIcon(p.title, p.category); return p.emoji === next ? p : { ...p, emoji: next }; });
+  }, [c.title, c.category]);
 
   // Media (photo/video) the teacher uploads to market the class.
   const [media, setMedia] = useState(null);        // dataURL
@@ -9291,28 +9383,33 @@ function CreateCourseScreen({ V, dense, os, onCreate, goBack, busy }) {
       </BlurFade>
 
       <div style={{ padding: `0 ${pad}px`, display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
-        {/* Emoji picker */}
-        <div>
-          <div style={labelStyle}>Pick an icon</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {EMOJIS.map(e => {
-              const on = c.emoji === e;
-              return (
-                <button key={e} type="button" onClick={() => set('emoji', e)} className="m-tap" style={{
-                  width: 42, height: 42, borderRadius: 12, fontSize: 22,
-                  background: on ? V.accent : V.surface,
-                  border: `1px solid ${on ? V.accent : V.rule}`,
-                  boxShadow: on ? `0 6px 14px ${V.accent}40` : 'none',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  transition: 'background .15s ease, transform .15s ease',
-                  transform: on ? 'scale(1.05)' : 'scale(1)',
-                }}>{e}</button>
-              );
-            })}
+        <style>{`@keyframes m-iconpop{0%{transform:scale(.55);opacity:.2}60%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}`}</style>
+        {Field('title', 'Class name', { ph: 'e.g. Modern Watercolor' })}
+
+        {/* Auto class icon — derived from category + name, not editable */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 14,
+          background: V.surface, border: `1px solid ${V.rule}`,
+          borderRadius: 14, padding: '12px 14px',
+        }}>
+          <div key={c.emoji} style={{
+            width: 56, height: 56, borderRadius: 16, fontSize: 28, flexShrink: 0,
+            background: V.accentBg, border: `1px solid ${V.accent}33`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'm-iconpop .38s cubic-bezier(.2,.8,.2,1)',
+          }}>{c.emoji}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 700, color: V.ink }}>Class icon</span>
+              <span style={{ fontSize: 9.5, letterSpacing: '0.1em', textTransform: 'uppercase',
+                fontWeight: 700, color: V.ribbon, background: `${V.ribbon}1a`,
+                padding: '2px 7px', borderRadius: 100 }}>Auto</span>
+            </div>
+            <div style={{ fontSize: 12, color: V.inkMute, lineHeight: 1.4, marginTop: 3 }}>
+              Picked from your category{c.title.trim() ? ' & class name' : ''} to keep the catalog tidy.
+            </div>
           </div>
         </div>
-
-        {Field('title', 'Class name', { ph: 'e.g. Modern Watercolor' })}
 
         {/* Category chips */}
         <div>
@@ -12694,11 +12791,7 @@ function MobileApp() {
       display: 'flex', justifyContent: 'center', alignItems: 'stretch',
       overflow: 'hidden',
     }}>
-      <div style={{
-        width: '100%', maxWidth: 402, height: '100%',
-        position: 'relative', overflow: 'hidden',
-        boxShadow: '0 0 60px rgba(0,0,0,0.4)',
-      }}>
+      <div className="m-app-col">
         <MentoraApp variant="spark" os="ios" density="cozy" scope="app"
                     fullScreen={true}
                     initialScreen="welcome" />
