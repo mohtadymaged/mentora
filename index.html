@@ -553,6 +553,34 @@ window.MENTORA_SUPABASE = {
       await sb.from("profiles").update({ notif_prefs: prefs }).eq("id", session.user.id);
     },
 
+    // ── Feedback / complaints — straight to the town team ──
+    // kind: 'idea' | 'bug' | 'complaint'. Captures who sent it (and their
+    // name/zone snapshot) so the team can follow up. Needs the `feedback` table
+    // (see sql/feedback.sql).
+    async sendFeedback(payload) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) throw new Error("Please sign in again.");
+      let name = null, zone = null;
+      try {
+        const { data: p } = await sb.from("profiles")
+          .select("full_name, zone").eq("id", session.user.id).single();
+        if (p) { name = p.full_name; zone = p.zone; }
+      } catch (e) {}
+      const row = {
+        author_id: session.user.id,
+        author_name: name,
+        author_zone: zone,
+        kind: payload.kind || "idea",
+        subject: (payload.subject || "").trim() || null,
+        body: (payload.body || "").trim(),
+        app_version: "1.0",
+        status: "new",
+      };
+      const { data, error } = await sb.from("feedback").insert(row).select().single();
+      if (error) throw error;
+      return data;
+    },
+
     // ── Payment methods (learner) — non-sensitive card metadata only ──
     async paymentMethods() {
       const { data: { session } } = await sb.auth.getSession();
@@ -649,7 +677,47 @@ window.MENTORA_SUPABASE = {
       return data;
     },
 
-    // ── Account security ──
+    // ── Mentor earnings (monthly payouts) ──
+    // Learners pay into Mentora; the mentor is owed 85% of what their classes
+    // collect. This rolls up the mentor's paid `purchases` and subtracts what
+    // has already been paid out, so the UI can show a live balance.
+    async mentorEarnings() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return null;
+      const me = session.user.id;
+      const FEE_PCT = 15; // Mentora keeps 15%; mentor keeps 85%.
+      const { data: courses } = await sb.from("courses").select("id").eq("mentor_id", me);
+      const ids = (courses || []).map(c => c.id);
+      let gross = 0, monthGross = 0;
+      const now = new Date();
+      const ym = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+      if (ids.length) {
+        const { data: pur } = await sb.from("purchases")
+          .select("amount, created_at, status").in("course_id", ids).eq("status", "paid");
+        (pur || []).forEach(r => {
+          const a = Number(r.amount) || 0; gross += a;
+          let m = "";
+          try { const d = new Date(r.created_at); m = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); } catch (e) {}
+          if (m === ym) monthGross += a;
+        });
+      }
+      const share = Math.round(gross * (100 - FEE_PCT) / 100);
+      const monthShare = Math.round(monthGross * (100 - FEE_PCT) / 100);
+      let paidOut = 0;
+      const { data: po } = await sb.from("payouts")
+        .select("amount, status").eq("mentor_id", me).eq("status", "paid");
+      (po || []).forEach(x => { paidOut += Number(x.amount) || 0; });
+      const pending = Math.max(0, share - paidOut);
+      return { gross, share, paidOut, pending, monthGross, monthShare, currency: "EGP", feePct: FEE_PCT };
+    },
+    async myPayouts() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) return [];
+      const { data, error } = await sb.from("payouts")
+        .select("*").eq("mentor_id", session.user.id).order("created_at", { ascending: false });
+      if (error) { console.warn("[Mentora] myPayouts:", error.message); return []; }
+      return data || [];
+    },
     async changePassword(newPassword) {
       const { error } = await sb.auth.updateUser({ password: newPassword });
       if (error) throw error;
@@ -6155,7 +6223,7 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
 
   // Notification preferences persist across sessions.
   const [notifs, setNotifs] = useState(() => {
-    const defaults = { purchases: true, reviews: true, messages: true };
+    const defaults = { purchases: true, bookings: true, reviews: true, follows: true, messages: true, payouts: true };
     try { return { ...defaults, ...JSON.parse(localStorage.getItem('mentora_notif_prefs') || '{}') }; }
     catch (e) { return defaults; }
   });
@@ -6296,7 +6364,7 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
       }}>
         <SettingsGroupHead V={V} pad={pad}>Account</SettingsGroupHead>
         {isTeacher
-          ? <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 4l9 5.5"/><path d="M4 10v8M9 10v8M15 10v8M20 10v8M2.5 21h19"/></svg>} label="Payouts & banking" value="May 15" onClick={() => openSub && openSub('payouts')} />
+          ? <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5 12 4l9 5.5"/><path d="M4 10v8M9 10v8M15 10v8M20 10v8M2.5 21h19"/></svg>} label="Earnings & payouts" value="Monthly" onClick={() => openSub && openSub('payouts')} />
           : <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg>} label="Payment method" onClick={() => openSub && openSub('payment')} />
         }
         <DividerRow V={V} />
@@ -6326,8 +6394,11 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
         <SettingsGroupHead V={V} pad={pad}>Notifications</SettingsGroupHead>
         {[
           ['purchases', isTeacher ? 'New enrolments' : 'New courses from friends'],
+          ['bookings',  isTeacher ? 'Booking & session reminders' : 'Class & session reminders'],
           ['reviews',   'Reviews & ratings'],
+          ['follows',   'New followers'],
           ['messages',  'Direct messages'],
+          ...(isTeacher ? [['payouts', 'Payouts & earnings']] : []),
         ].map(([key, label], i, arr) => (
           <React.Fragment key={key}>
             <div style={{
@@ -6352,6 +6423,8 @@ function SettingsScreen({ V, dense, role, onSignOut, profile, onEditProfile, ope
       }}>
         <SettingsGroupHead V={V} pad={pad}>Support</SettingsGroupHead>
         <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>} label="Help & community guidelines" onClick={() => openSub && openSub('help')} />
+        <DividerRow V={V} />
+        <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11l18-8-8 18-2-7-8-3z"/></svg>} label="Send feedback" onClick={() => openSub && openSub('feedback')} />
         <DividerRow V={V} />
         <Row icon={<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>} label="Terms & privacy" onClick={() => openSub && openSub('terms')} />
         <DividerRow V={V} />
@@ -6981,6 +7054,13 @@ function PayoutsScreen({ V, dense, goBack }) {
   const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
   const [acct, setAcct] = React.useState({ bank_name: '', account_name: '', iban: '', payout_email: '' });
   const [busy, setBusy] = React.useState(false); const [saved, setSaved] = React.useState(false);
+  const [earn, setEarn] = React.useState(null);
+  const [payouts, setPayouts] = React.useState([]);
+  React.useEffect(() => {
+    if (!DB) return;
+    if (DB.mentorEarnings) DB.mentorEarnings().then(e => setEarn(e)).catch(() => {});
+    if (DB.myPayouts) DB.myPayouts().then(p => setPayouts(p || [])).catch(() => {});
+  }, [DB]);
   React.useEffect(() => {
     if (!DB) return;
     DB.payoutAccount().then(a => {
@@ -6996,16 +7076,80 @@ function PayoutsScreen({ V, dense, goBack }) {
       .then(() => { setSaved(true); }).catch(() => {}).finally(() => setBusy(false));
   };
   return (
-    <SubScreen V={V} dense={dense} eyebrow="where you get paid —" title="Payouts & banking" goBack={goBack}>
-      {subCard(V, (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 38, height: 38, borderRadius: 11, background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 19 }}>💰</div>
-          <div>
-            <div style={{ fontSize: 13.5, color: V.ink, fontWeight: 600 }}>Next payout · May 15</div>
-            <div style={{ fontSize: 11.5, color: V.inkMute, marginTop: 2 }}>Paid out monthly to the account below.</div>
-          </div>
-        </div>
-      ))}
+    <SubScreen V={V} dense={dense} eyebrow="where you get paid —" title="Earnings & payouts" goBack={goBack}>
+      {(() => {
+        const cur = (earn && earn.currency) || 'EGP';
+        const money = (n) => `£E ${(Number(n) || 0).toLocaleString()}`;
+        // Next payout = the 1st of next month.
+        const now = new Date();
+        const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        const nextLabel = next.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+        const pending = earn ? earn.pending : 0;
+        const hasEarnings = earn && (earn.gross > 0 || earn.paidOut > 0);
+        return (
+          <React.Fragment>
+            {/* Balance hero */}
+            <div style={{
+              borderRadius: 20, padding: 18, marginBottom: 14, position: 'relative', overflow: 'hidden',
+              background: `linear-gradient(150deg, ${V.ink} 0%, #2a2018 100%)`, color: '#fffaf0',
+            }}>
+              <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,250,240,0.6)', fontWeight: 700 }}>Pending balance</div>
+              <div className="m-serif" style={{ fontSize: 38, fontWeight: 600, margin: '4px 0 2px', letterSpacing: '-0.01em' }}>
+                {earn ? money(pending) : '—'}
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,250,240,0.7)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: V.accent }} />
+                Paid out monthly · next payout {nextLabel}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                {[['This month', earn ? money(earn.monthShare) : '—'],
+                  ['Lifetime earned', earn ? money(earn.share) : '—'],
+                  ['Paid out', earn ? money(earn.paidOut) : '—']].map(([k, v]) => (
+                  <div key={k} style={{ flex: 1, background: 'rgba(255,255,255,0.08)', borderRadius: 12, padding: '9px 8px' }}>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{v}</div>
+                    <div style={{ fontSize: 9.5, color: 'rgba(255,250,240,0.6)', marginTop: 2, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{k}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ fontSize: 11.5, color: V.inkMute, lineHeight: 1.5, margin: '0 2px 16px', textWrap: 'pretty' }}>
+              Learners pay into Mentora; you keep <strong style={{ color: V.inkSoft }}>{earn ? (100 - earn.feePct) : 85}%</strong> of every seat. Your balance is sent to the account below on the 1st of each month.
+            </div>
+
+            {!hasEarnings && earn && (
+              <div style={{ background: V.surface, border: `1px dashed ${V.rule}`, borderRadius: 14, padding: '16px', textAlign: 'center', marginBottom: 16 }}>
+                <div style={{ fontSize: 22, marginBottom: 6 }}>🌱</div>
+                <div style={{ fontSize: 13, color: V.inkSoft, lineHeight: 1.5 }}>No earnings yet. When neighbours enrol in your paid classes, your share shows up here.</div>
+              </div>
+            )}
+
+            {/* Payout history */}
+            {payouts.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                {subLabel(V, 'Payout history')}
+                {payouts.map((p, i) => (
+                  <div key={p.id || i} style={{ display: 'flex', alignItems: 'center', gap: 12, background: V.surface, border: `1px solid ${V.rule}`, borderRadius: 14, padding: '11px 13px', marginBottom: 8 }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 10, background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>✓</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, color: V.ink, fontWeight: 600 }}>{money(p.amount)}</div>
+                      <div style={{ fontSize: 11, color: V.inkMute, marginTop: 1 }}>
+                        {p.period ? p.period : ''}{p.method ? ' · ' + p.method : ''}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 10.5, color: V.inkMute, flexShrink: 0 }}>
+                      {(() => { try { return new Date(p.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); } catch (e) { return ''; } })()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+          </React.Fragment>
+        );
+      })()}
+
+      <div className="m-serif" style={{ fontSize: 16, color: V.ink, margin: '6px 2px 10px', fontWeight: V.polaroid ? 500 : 400 }}>Where we send your money</div>
       {subLabel(V, 'Bank name')}{subInput(V, { value: acct.bank_name, onChange: set('bank_name'), placeholder: 'e.g. CIB', style: { marginBottom: 12 } })}
       {subLabel(V, 'Account holder name')}{subInput(V, { value: acct.account_name, onChange: set('account_name'), placeholder: 'Full name', style: { marginBottom: 12 } })}
       {subLabel(V, 'IBAN / account number')}{subInput(V, { value: acct.iban, onChange: set('iban'), placeholder: 'EG__ ____ ____', style: { marginBottom: 12 } })}
@@ -7192,6 +7336,128 @@ function ContentScreen({ V, dense, goBack, eyebrow, title, sections }) {
         </div>
       ))}
       <div className="m-hand" style={{ textAlign: 'center', color: V.inkMute, fontSize: 14, marginTop: 4 }}>— El Gouna, together —</div>
+    </SubScreen>
+  );
+}
+
+// ── Feedback & complaints ────────────────────────────────
+// Members send an idea, a bug report, or a complaint straight to the town team.
+function FeedbackScreen({ V, dense, goBack }) {
+  const DB = (typeof window !== 'undefined') && window.MENTORA_DB;
+  const KINDS = [
+    { id: 'idea',      emoji: '💡', label: 'Idea',      hint: "Something you'd love to see in Mentora." },
+    { id: 'bug',       emoji: '🐞', label: 'Bug',       hint: "Something looks wrong or isn't working." },
+    { id: 'complaint', emoji: '🫤', label: 'Complaint', hint: "A neighbour, a class, or an experience to flag." },
+  ];
+  const [kind, setKind] = React.useState('idea');
+  const [subject, setSubject] = React.useState('');
+  const [body, setBody] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [done, setDone] = React.useState(false);
+  const [err, setErr] = React.useState('');
+  const BODY_MAX = 1000;
+  const active = KINDS.find(k => k.id === kind);
+  const canSend = body.trim().length >= 4 && !busy;
+
+  const submit = () => {
+    if (!canSend) return;
+    setBusy(true); setErr('');
+    if (!DB || !DB.sendFeedback) {
+      // Preview / no backend — simulate success so the flow is testable.
+      setTimeout(() => { setBusy(false); setDone(true); }, 600);
+      return;
+    }
+    DB.sendFeedback({ kind, subject, body })
+      .then(() => { setBusy(false); setDone(true); })
+      .catch(e => { setBusy(false); setErr(e.message || 'Could not send — please try again.'); });
+  };
+
+  if (done) {
+    return (
+      <SubScreen V={V} dense={dense} eyebrow="thank you —" title="Message sent" goBack={goBack}>
+        <div className="m-fade" style={{ textAlign: 'center', padding: '24px 8px 8px' }}>
+          <div style={{
+            width: 78, height: 78, borderRadius: '50%', margin: '0 auto 18px',
+            background: V.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 38,
+          }}>🤍</div>
+          <div className="m-serif" style={{ fontSize: 21, color: V.ink, marginBottom: 8, lineHeight: 1.2 }}>
+            We hear you.
+          </div>
+          <p style={{ fontSize: 13.5, color: V.inkSoft, lineHeight: 1.6, maxWidth: 280, margin: '0 auto 22px', textWrap: 'pretty' }}>
+            The El Gouna town team reads every note. If it needs a reply, we'll reach you through the app or your registered email.
+          </p>
+          {subPrimaryBtn(V, 'Back to settings', goBack)}
+          <button onClick={() => { setDone(false); setBody(''); setSubject(''); setKind('idea'); }} className="m-tap" style={{
+            width: '100%', background: 'transparent', border: 'none', color: V.inkMute,
+            fontSize: 13, fontWeight: 600, marginTop: 12, padding: 6, cursor: 'pointer', fontFamily: V.fontSans,
+          }}>Send another</button>
+        </div>
+      </SubScreen>
+    );
+  }
+
+  return (
+    <SubScreen V={V} dense={dense} eyebrow="we're listening —" title="Send feedback" goBack={goBack}>
+      <p style={{ fontSize: 13, color: V.inkSoft, lineHeight: 1.55, margin: '0 0 16px', textWrap: 'pretty' }}>
+        Help us make Mentora better for the whole community. Tell us what's on your mind — kindly.
+      </p>
+
+      {/* Kind picker */}
+      {subLabel(V, 'What kind of note?')}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+        {KINDS.map(k => {
+          const on = k.id === kind;
+          return (
+            <button key={k.id} onClick={() => setKind(k.id)} className="m-tap" style={{
+              flex: 1, background: on ? V.accentBg : V.surface,
+              border: `1.5px solid ${on ? V.accent : V.rule}`, borderRadius: 14,
+              padding: '12px 4px', cursor: 'pointer', fontFamily: V.fontSans,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+            }}>
+              <span style={{ fontSize: 22, lineHeight: 1 }}>{k.emoji}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: on ? V.accent : V.inkSoft }}>{k.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11.5, color: V.inkMute, margin: '0 2px 16px', minHeight: 16 }}>{active && active.hint}</div>
+
+      {/* Subject (optional) */}
+      {subLabel(V, 'Subject (optional)')}
+      {subInput(V, {
+        value: subject, maxLength: 80,
+        onChange: e => setSubject(e.target.value),
+        placeholder: active && active.id === 'complaint' ? 'e.g. issue with a class I booked' : 'A few words',
+        style: { marginBottom: 14 },
+      })}
+
+      {/* Body */}
+      {subLabel(V, 'Tell us more')}
+      <textarea value={body} maxLength={BODY_MAX} onChange={e => setBody(e.target.value)}
+        rows={6}
+        placeholder={
+          kind === 'bug' ? "What happened, and what did you expect? Where in the app?"
+          : kind === 'complaint' ? "Share what happened. We treat every complaint confidentially."
+          : "What would make Mentora better for you?"
+        }
+        style={{
+          width: '100%', boxSizing: 'border-box', background: V.surface,
+          border: `1px solid ${V.rule}`, borderRadius: 12, padding: '12px 14px',
+          fontSize: 15, color: V.ink, fontFamily: V.fontSans, outline: 'none',
+          resize: 'none', lineHeight: 1.5,
+        }} />
+      <div style={{ display: 'flex', justifyContent: 'flex-end', fontSize: 11, color: V.inkMute, margin: '5px 2px 16px' }}>
+        {body.length}/{BODY_MAX}
+      </div>
+
+      {err && <div style={{ color: '#b5462e', fontSize: 12.5, marginBottom: 12, fontWeight: 600 }}>{err}</div>}
+
+      {subPrimaryBtn(V, kind === 'complaint' ? 'Send complaint' : 'Send', submit, { disabled: !canSend, busy })}
+
+      <p style={{ fontSize: 11, color: V.inkMute, lineHeight: 1.55, margin: '14px 2px 0', textWrap: 'pretty' }}>
+        Your note goes privately to the El Gouna town team along with your name and zone, so we can follow up if needed.
+      </p>
     </SubScreen>
   );
 }
@@ -12672,7 +12938,7 @@ function MentoraApp({ variant, os, density, scope,
     if (screen === 'booking')  return setScreen('mentor');
     if (screen === 'mentor')   return setScreen('home');
     if (screen === 'editProfile') return setScreen('settings');
-    if (screen === 'payment' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family') return setScreen('settings');
+    if (screen === 'payment' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family' || screen === 'feedback') return setScreen('settings');
     if (screen === 'addCard') return setScreen('payment');
     if (screen === 'register') return setScreen('role');
     if (screen === 'role')     return setScreen('landing');
@@ -12695,12 +12961,12 @@ function MentoraApp({ variant, os, density, scope,
   };
 
   const isPreAuth = screen === 'splash' || screen === 'welcome' || screen === 'landing' || screen === 'role' || screen === 'register' || screen === 'login';
-  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'courseDetail' || screen === 'chat' || screen === 'group' || screen === 'createCourse' || screen === 'editProfile' || screen === 'payment' || screen === 'addCard' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family'; // these have their own bottom bars
+  const hideTabBar = isPreAuth || screen === 'booking' || screen === 'courseDetail' || screen === 'chat' || screen === 'group' || screen === 'createCourse' || screen === 'editProfile' || screen === 'payment' || screen === 'addCard' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family' || screen === 'feedback'; // these have their own bottom bars
   // Which tab reads as active (messages screen lights the Messages tab;
   // settings screen lights the Profile tab).
   const activeTab = screen === 'messages' ? 'messages'
                   : (screen === 'chat' || screen === 'group') ? 'messages'
-                  : (screen === 'settings' || screen === 'editProfile' || screen === 'payment' || screen === 'addCard' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family') ? 'profile'
+                  : (screen === 'settings' || screen === 'editProfile' || screen === 'payment' || screen === 'addCard' || screen === 'payouts' || screen === 'purchases' || screen === 'password' || screen === 'help' || screen === 'terms' || screen === 'family' || screen === 'feedback') ? 'profile'
                   : screen;
   const userPhoto = 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?q=80&w=200&auto=format&fit=crop';
   // Tab-bar avatar reflects the chosen profile: an uploaded photo, the chosen
@@ -12844,6 +13110,7 @@ function MentoraApp({ variant, os, density, scope,
         {screen === 'purchases' && (<PurchaseHistoryScreen V={V} dense={dense} goBack={goBack} />)}
         {screen === 'password' && (<PasswordSecurityScreen V={V} dense={dense} goBack={goBack} onSignOut={handleSignOut} />)}
         {screen === 'help' && (<ContentScreen V={V} dense={dense} goBack={goBack} eyebrow="good neighbours —" title="Help & community guidelines" sections={HELP_SECTIONS} />)}
+        {screen === 'feedback' && (<FeedbackScreen V={V} dense={dense} goBack={goBack} />)}
         {screen === 'family' && (<FamilyScreen V={V} dense={dense} goBack={goBack} />)}
         {screen === 'terms' && (<ContentScreen V={V} dense={dense} goBack={goBack} eyebrow="the fine print —" title="Terms & privacy" sections={TERMS_SECTIONS} />)}
         {screen === 'editProfile' && (
@@ -12934,7 +13201,7 @@ function MobileApp() {
       <div className="m-app-col">
         <MentoraApp variant="spark" os="ios" density="cozy" scope="app"
                     fullScreen={true}
-                    initialScreen={preview ? 'createCourse' : 'welcome'}
+                    initialScreen={preview ? 'home' : 'welcome'}
                     initialRole={preview ? 'teacher' : 'learner'} />
       </div>
     </div>
